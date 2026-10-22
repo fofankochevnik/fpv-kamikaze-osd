@@ -32,3 +32,4 @@ GetProcAddress
 GetFileAttributesW
 VirtualQueryEx
 GetPrivateProfileSectionW
+VirtualFree

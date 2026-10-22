@@ -50,6 +50,7 @@ IMP HANDLE __stdcall CreateThread(void*, u64, u32 (__stdcall*)(void*), void*, u3
 IMP u32 __stdcall GetPrivateProfileStringW(const wc*, const wc*, const wc*, wc*, u32, const wc*);
 IMP u32 __stdcall GetPrivateProfileSectionW(const wc*, wc*, u32, const wc*);
 IMP void* __stdcall VirtualAlloc(void*, u64, u32, u32);
+IMP i32 __stdcall VirtualFree(void*, u64, u32);
 IMP HANDLE __stdcall CreateMutexW(void*, i32, const wc*);
 IMP u32 __stdcall GetLastError();
 IMP void __stdcall InitializeCriticalSection(CRITICAL_SECTION*);
@@ -1620,6 +1621,63 @@ static void ApplyEw(bool on) {
     }
 }
 
+
+static volatile i32 g_fpsShown = 0; static u64 g_fpsAddr = 0;
+struct FpsCand { u32 off, last, d0; };
+static void FpsTick(u64 now) {
+    static u64 dRva = 0, dSize = 0, tPrev = 0, tFound = 0; static u8* bufA = 0; static u8* bufB = 0;
+    static FpsCand* cand = 0; static i32 nc = 0, round = 0; static bool tried = false;
+    static u32 lastVal = 0; static u64 lastT = 0; static double smooth = 0;
+    if (g_fpsAddr) {
+        if (now - lastT < 500) return;
+        u32 v = Rd<u32>(g_fpsAddr);
+        if (lastT) { u32 d = v - lastVal; double dt = (double)(now - lastT) / 1000.0; double f = d / dt; if (f > 1000) f = 0; smooth = smooth <= 0 ? f : smooth * 0.5 + f * 0.5; g_fpsShown = (i32)(smooth + 0.5); }
+        lastVal = v; lastT = now; return;
+    }
+    if (tried && !bufA) return;
+    if (!tried) {
+        tried = true;
+        i32 pe = Rd<i32>(g_base + 0x3C); u16 ns = Rd<u16>(g_base + pe + 6), osz = Rd<u16>(g_base + pe + 20);
+        for (i32 i = 0; i < ns; i++) { u64 sh = g_base + pe + 24 + osz + (u64)i * 40; char nm[9]; RPM(sh, nm, 8); nm[8] = 0; if (seq(nm, ".data")) { dSize = Rd<u32>(sh + 8); dRva = Rd<u32>(sh + 12); break; } }
+        if (!dRva || !dSize || dSize > 0x4000000) return;
+        bufA = (u8*)VirtualAlloc(0, dSize + 16, 0x3000, 4); bufB = (u8*)VirtualAlloc(0, dSize + 16, 0x3000, 4); cand = (FpsCand*)VirtualAlloc(0, 65536 * sizeof(FpsCand), 0x3000, 4);
+        if (!bufA || !bufB || !cand) { bufA = 0; return; }
+        for (u64 o = 0; o < dSize; o += 0x1000) RPM(g_base + dRva + o, bufA + o, (dSize - o) < 0x1000 ? (dSize - o) : 0x1000);
+        tPrev = now; return;
+    }
+    if (now - tPrev < 600) return;
+    for (u64 o = 0; o < dSize; o += 0x1000) RPM(g_base + dRva + o, bufB + o, (dSize - o) < 0x1000 ? (dSize - o) : 0x1000);
+    double dtMs = (double)(now - tPrev);
+    if (round == 0) {
+        for (u64 o = 0; o + 4 <= dSize && nc < 65536; o += 4) {
+            u32 a = *(u32*)(bufA + o), b = *(u32*)(bufB + o); u32 d = b - a;
+            double rate = d * 1000.0 / dtMs;
+            if (d < 3 || rate > 600 || rate < 4) continue;
+            if (rate > 920 && rate < 1090) continue;
+            cand[nc].off = (u32)o; cand[nc].last = b; cand[nc].d0 = d; nc++;
+        }
+    } else {
+        i32 w = 0;
+        for (i32 k = 0; k < nc; k++) {
+            u32 b = *(u32*)(bufB + cand[k].off); u32 d = b - cand[k].last;
+            double rate = d * 1000.0 / dtMs; double r0 = (double)cand[k].d0;
+            if (d < 3 || rate > 600 || rate < 4) continue;
+            if (rate > 920 && rate < 1090) continue;
+            double ratio = (double)d / r0; if (ratio < 0.5 || ratio > 2.0) continue;
+            cand[w] = cand[k]; cand[w].last = b; w++;
+        }
+        nc = w;
+    }
+    u8* t = bufA; bufA = bufB; bufB = t; tPrev = now; round++;
+    if (round >= 5 || nc == 0) {
+        if (nc > 0) {
+            i32 best = -1, bestN = 0;
+            for (i32 k = 0; k < nc; k++) { i32 c = 0; for (i32 q = 0; q < nc; q++) { double x = cand[k].last - 0.0, y = cand[q].last - 0.0; (void)x; (void)y; double a = (double)cand[k].d0, b2 = (double)cand[q].d0; if (b2 > a * 0.85 && b2 < a * 1.15) c++; } if (c > bestN) { bestN = c; best = k; } }
+            if (best >= 0) { g_fpsAddr = g_base + dRva + cand[best].off; static char B_[128]; SB sb{ B_, 0, 128 }; sb.s("fps counter: rva="); sb.h(dRva + cand[best].off); sb.s(" candidates="); sb.i(nc); sb.s(" group="); sb.i(bestN); sb.z(); Log(B_); }
+        } else Log("fps counter: not found");
+        VirtualFree(bufA, 0, 0x8000); VirtualFree(bufB, 0, 0x8000); VirtualFree(cand, 0, 0x8000); bufA = 0; bufB = 0; cand = 0;
+    }
+}
 static u32 __stdcall Worker(void*) {
     u64 lastInit = 0, lastHud = 0; i32 lastSerial = -1; u64 dumpAt = 0; i32 initTries = 0; u64 hudPawn = 0;
     u64 lastWorld = 0, wreckAt = 0;
@@ -1640,6 +1698,7 @@ static u32 __stdcall Worker(void*) {
         if (C.noNoise && g_kamikazeActive) KillInterference(g_pawn);
         if (g_ewBuilt) ApplyEw(C.noNoise && g_kamikazeActive && !g_userHidden);
         ApplyScreenPercentage(g_kamikazeActive && C.camHeight > 0 && !g_userHidden, g_winH);
+        FpsTick(now);
         {
             u64 wld = Rd<u64>(g_base + RVA_GWORLD);
             if (wld != lastWorld) { lastWorld = wld; wreckAt = now + 3000; g_ewBuilt = false; g_ewN = 0; g_naniteLogged = false; g_landOk = 0; g_folN = 0; g_folClsN = 0; g_kbPN = 0; if (g_kbK) memset(g_kbK, 0, (u64)KBC * 8); g_vehBase = 0; g_oDestroyTime = -1; if (g_vk) { memset(g_vk, 0, (u64)VHC * 8); } }
@@ -1759,7 +1818,6 @@ static void DrawStaticLabels() {
     TextEx(L"\x0433\x0430\x0437 :", 887, 409, true, F, g_brW);
     TextEx(L"%", 924, 409, false, F, g_brW);
     TextEx(L"FW: 2.27.3", 15, 531, false, F, g_brW);
-    TextEx(L"FPS: 31", 447, 531, false, F, g_brW);
     TextEx(L"SN: 637738473", 799, 531, false, F, g_brW);
     TextEx(L"\x0411\x041F\x041B\x0410", 13, 558, false, S, g_brG);
     TextEx(L"\x041F\x0443\x043B\x044C\x0442", 73, 558, false, S, g_brG);
@@ -2070,8 +2128,9 @@ static bool Render(i32 w, i32 h) {
     FmtW(s[7], (double)T.rxg, 0, false, 0);
     FmtW(s[8], (double)(i64)(T.gas + 0.5), 0, false, 0);
     FmtW(s[9], T.txg, 1, false, 0);
+    s[10][0] = 'F'; s[10][1] = 'P'; s[10][2] = 'S'; s[10][3] = ':'; s[10][4] = ' '; FmtW(s[10] + 5, (double)g_fpsShown, 0, false, 0);
     wc key[512]; key[0] = 0;
-    for (i32 i = 0; i < 10; i++) { wcat(key, s[i], 512); wcat(key, L"|", 512); }
+    for (i32 i = 0; i < 11; i++) { wcat(key, s[i], 512); wcat(key, L"|", 512); }
     {
         double x0 = 0, y0 = 0, ux = 0, uy = 0; bool hz = HorizonLine(w, h, &x0, &y0, &ux, &uy);
         wc t[64]; i32 n = 0; i32 v[5] = { 0, hz ? (i32)x0 : -9999, hz ? (i32)y0 : -9999, hz ? (i32)(ux * 1000) : 0, hz ? (i32)(uy * 1000) : 0 };
@@ -2094,6 +2153,7 @@ static bool Render(i32 w, i32 h) {
     Text(s[7], 72, 409, false);
     Text(s[8], 924, 409, true);
     Text(s[9], 68, 444, false);
+    Text(s[10], 447, 531, false);
     DrawAimAndHorizon(w, h);
     EnsureDib(w, h);
     Upscale();
