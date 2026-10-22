@@ -2027,7 +2027,7 @@ static void DrawAimAndHorizon(i32 W, i32 H) {
 }
 
 struct CapFrame { HDC dc; HANDLE bmp; u32* bits; i32 w, h; u64 t; bool ok; };
-static CapFrame g_ring[4]; static volatile i32 g_ringIdx = 0;
+static CapFrame g_ring[8]; static volatile i32 g_ringIdx = 0;
 static volatile i32 g_capOn = 0, g_capBusy = 0, g_frozen = 0;
 static volatile i32 g_capX = 0, g_capY = 0, g_capW = 0, g_capH = 0;
 static volatile u64 g_manualKeyMs = 0;
@@ -2046,7 +2046,7 @@ static u32 __stdcall CaptureThread(void*) {
         if (!g_capOn || g_frozen || g_capW < 100) { Sleep(10); continue; }
         g_capBusy = 1;
         if (g_frozen) { g_capBusy = 0; continue; }
-        i32 i = (g_ringIdx + 1) & 3;
+        i32 i = (g_ringIdx + 1) & 7;
         CapFrame& f = g_ring[i];
         EnsureCap(f, g_capW, g_capH);
         u64 t0 = NowMs();
@@ -2061,21 +2061,22 @@ static u32 __stdcall CaptureThread(void*) {
     return 0;
 }
 static u32* g_frzBuf = 0; static i32 g_frzW = 0, g_frzH = 0;
-static bool GrabFreezeFrame(u64 trigMs, i32 w, i32 h) {
+static bool GrabFreezeFrame(u64 trigMs, u64 pickMs, i32 w, i32 h) {
     g_frozen = 1;
     for (i32 k = 0; k < 200 && g_capBusy; k++) Sleep(1);
     i32 best = -1; u64 bestT = 0; i32 newest = -1; u64 newT = 0;
-    for (i32 i = 0; i < 4; i++) {
+    for (i32 i = 0; i < 8; i++) {
         CapFrame& f = g_ring[i]; if (!f.ok || !f.t || f.w != w || f.h != h) continue;
         if (f.t > newT) { newT = f.t; newest = i; }
-        if (f.t + (u64)C.frzBack <= trigMs && f.t > bestT) { bestT = f.t; best = i; }
+        if (f.t + (u64)C.frzBack <= pickMs && f.t > bestT) { bestT = f.t; best = i; }
     }
+    if (best < 0) { u64 oT = ~0ull; for (i32 i = 0; i < 8; i++) { CapFrame& f = g_ring[i]; if (f.ok && f.t && f.w == w && f.h == h && f.t < oT) { oT = f.t; best = i; } } }
     if (best < 0) best = newest;
     if (best < 0) return false;
     if (!g_frzBuf || g_frzW != w || g_frzH != h) { g_frzBuf = (u32*)VirtualAlloc(0, (u64)w * h * 4, 0x3000, 4); g_frzW = w; g_frzH = h; }
     if (!g_frzBuf) return false;
     memcpy(g_frzBuf, g_ring[best].bits, (u64)w * h * 4);
-    static char B_[96]; SB sb{ B_, 0, 96 }; sb.s("impact: freeze frame age ms="); sb.i((i64)(trigMs - g_ring[best].t)); sb.z(); Log(B_);
+    static char B_[96]; SB sb{ B_, 0, 96 }; sb.s("impact: freeze frame age ms="); sb.i((i64)(trigMs - g_ring[best].t)); sb.s(" before-impact ms="); sb.i((i64)pickMs - (i64)g_ring[best].t); sb.z(); Log(B_);
     return true;
 }
 static void* g_fontNI = 0; static void* g_brNI = 0; static void* g_brNIsh = 0; static void* g_fmtC = 0; static i32 g_fontNIh = 0;
@@ -2237,8 +2238,8 @@ extern "C" void Entry() {
             for (i32 k = 0; k < 6; k++) if (GetAsyncKeyState(mk[k]) & 0x8000) g_manualKeyMs = NowMs();
         }
         u64 pawn = 0;
-        static i32 frzState = 0; static u64 frzStart = 0; static bool prevBroken = false; static double lastSpd = 0; static u64 lastSpdT = 0; static double lpx = 0, lpy = 0, lpz = 0; static bool lpOk = false;
-        bool trigger = false; u64 trigMs = NowMs();
+        static i32 frzState = 0; static u64 frzStart = 0; static bool prevBroken = false; static double lastSpd = 0, fastSpd = 0; static u64 lastMoveT = 0, lastFastT = 0; static double lpx = 0, lpy = 0, lpz = 0; static bool lpOk = false;
+        bool trigger = false; u64 trigMs = NowMs(); u64 pickMs = 0; static bool frzSoft = false; static u64 frzPawn = 0; bool softTrig = false;
         if (g_reflReady) {
             pawn = ReadPawn();
             if (C.impactFx && frzState == 0) {
@@ -2246,18 +2247,30 @@ extern "C" void Entry() {
                 if (wasKam && pawn == lastPawn) {
                     u64 root = Rd<u64>(pawn + oRoot); double lc[3];
                     if (IsPtr(root) && RPM(root + oRelLoc, lc, 24)) {
-                        if (lpOk) { double dx = lc[0] - lpx, dy = lc[1] - lpy, dz = lc[2] - lpz; double d = Sqrt(dx * dx + dy * dy + dz * dz) / 100.0; double ddt = dt > 0.001 ? dt : 0.001; lastSpd = d / ddt; lastSpdT = trigMs; }
-                        lpx = lc[0]; lpy = lc[1]; lpz = lc[2]; lpOk = true;
+                        if (!lpOk) { lpx = lc[0]; lpy = lc[1]; lpz = lc[2]; lpOk = true; lastMoveT = trigMs; }
+                        else {
+                            double dx = lc[0] - lpx, dy = lc[1] - lpy, dz = lc[2] - lpz; double d2 = dx * dx + dy * dy + dz * dz;
+                            u64 el = trigMs - lastMoveT;
+                            if (d2 > 0.01 || el > 90) {
+                                double spd = Sqrt(d2) / 100.0 / ((el ? el : 1) / 1000.0);
+                                if (fastSpd > 8.0 && spd < fastSpd * 0.35) { trigger = true; softTrig = true; pickMs = lastFastT; static char B_[96]; SB sb{ B_, 0, 96 }; sb.s("impact: sudden stop "); sb.f(fastSpd, 1); sb.s(" -> "); sb.f(spd, 1); sb.s(" m/s"); sb.z(); Log(B_); fastSpd = 0; }
+                                else {
+                                    if (spd >= fastSpd * 0.7 || spd > 3.0) { lastFastT = lastMoveT; }
+                                    fastSpd = fastSpd <= 0 ? spd : fastSpd * 0.6 + spd * 0.4;
+                                }
+                                lastSpd = spd; lpx = lc[0]; lpy = lc[1]; lpz = lc[2]; lastMoveT = trigMs;
+                            }
+                        }
                     }
                     bool br = g_pi.brokenOff >= 0 && (Rd<u8>(pawn + g_pi.brokenOff) & g_pi.brokenMask);
-                    if (br && !prevBroken) { trigger = true; Log("impact: drone broken"); }
+                    if (br && !prevBroken && !trigger) { trigger = true; pickMs = lastFastT ? lastFastT : trigMs - 40; Log("impact: drone broken"); }
                     prevBroken = br;
                 } else if (wasKam && pawn != lastPawn && !prevBroken) {
                     bool manual = trigMs - g_manualKeyMs < 800;
-                    if (!manual && lastSpd >= C.frzSpeed) { trigger = true; Log("impact: drone lost"); }
+                    if (!manual && lastSpd >= C.frzSpeed) { trigger = true; pickMs = lastFastT ? lastFastT : trigMs - 60; Log("impact: drone lost"); }
                     else Log(manual ? "impact: drone left manually, no freeze" : "impact: drone lost while hovering, no freeze");
                 }
-                if (pawn != lastPawn) { prevBroken = false; lpOk = false; lastSpd = 0; }
+                if (pawn != lastPawn) { prevBroken = false; lpOk = false; lastSpd = 0; fastSpd = 0; lastFastT = 0; }
             }
             if (g_link != lastLink) { lastLink = g_link; const char* st[] = { "no GWorld", "world ok, no player controller", "controller ok, no pawn", "pawn ok" }; Log("link: ", st[g_link]); }
             if (pawn != lastPawn) {
@@ -2283,12 +2296,18 @@ extern "C" void Entry() {
             g_capX = p0.x; g_capY = p0.y; g_capW = rc0.r; g_capH = rc0.b;
             g_capOn = (C.impactFx && g_kamikazeActive && shown && frzState == 0) ? 1 : 0;
             if (trigger && shown && rc0.r >= 100 && rc0.b >= 100) {
-                if (GrabFreezeFrame(trigMs, rc0.r, rc0.b)) { frzState = 1; frzStart = trigMs; ComposeImpact(rc0.r, rc0.b, false); }
+                if (GrabFreezeFrame(trigMs, pickMs ? pickMs : trigMs, rc0.r, rc0.b)) { frzState = 1; frzStart = trigMs; frzSoft = softTrig; frzPawn = pawn; ComposeImpact(rc0.r, rc0.b, false); }
                 else g_frozen = 0;
                 if (frzState) { HDC scr = GetDC(0); POINT src = { 0, 0 }; SIZE sz = { rc0.r, rc0.b }; BLENDFUNCTION bf = { 0, 0, 255, 1 }; UpdateLayeredWindow(ov, scr, &p0, &sz, g_memDC, &src, 0, &bf, 2); ReleaseDC(0, scr); }
             }
             if (frzState) {
                 u64 el = NowMs() - frzStart;
+                if (frzState == 1 && frzSoft && el >= (u64)(C.frzTime * 1000)) {
+                    frzSoft = false;
+                    u64 pn = ReadPawn();
+                    bool br = pn && pn == frzPawn && g_pi.brokenOff >= 0 && (Rd<u8>(pn + g_pi.brokenOff) & g_pi.brokenMask);
+                    if (pn && pn == frzPawn && g_pi.kamikaze && !br) { Log("impact: drone survived, freeze cancelled"); frzState = 0; g_frozen = 0; g_lastKey[0] = 0; ShowWindow(ov, 0); shown = false; continue; }
+                }
                 if (frzState == 1 && el >= (u64)(C.frzTime * 1000)) {
                     frzState = 2; ComposeImpact(g_frzW, g_frzH, true);
                     HDC scr = GetDC(0); POINT src = { 0, 0 }; SIZE sz = { g_frzW, g_frzH }; BLENDFUNCTION bf = { 0, 0, 255, 1 }; UpdateLayeredWindow(ov, scr, &p0, &sz, g_memDC, &src, 0, &bf, 2); ReleaseDC(0, scr);
