@@ -1,0 +1,25 @@
+LIBRARY gdiplus.dll
+EXPORTS
+GdiplusStartup
+GdipCreateBitmapFromFile
+GdipCreateBitmapFromScan0
+GdipGetImageGraphicsContext
+GdipGraphicsClear
+GdipSetInterpolationMode
+GdipSetPixelOffsetMode
+GdipSetTextRenderingHint
+GdipSetSmoothingMode
+GdipDrawImageRectI
+GdipCreateFontFamilyFromName
+GdipGetGenericFontFamilySerif
+GdipCreateFont
+GdipCreateSolidFill
+GdipCreateStringFormat
+GdipSetStringFormatAlign
+GdipDrawString
+GdipFillRectangleI
+GdipCreatePen1
+GdipSetPenLineCap197819
+GdipDrawLine
+GdipDeleteGraphics
+GdipDisposeImage
