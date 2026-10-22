@@ -999,10 +999,6 @@ static void LoadCVarConfig() {
     g_cvN = 0;
     AddCVar(L"r.ScreenPercentage", 0, false);
     u32 n = GetPrivateProfileSectionW(L"CVars", g_secBuf, 8192, g_cfgPath);
-    if (n == 0) {
-        AppendFile(g_cfgPath, DEFAULT_CVARS, slen(DEFAULT_CVARS));
-        n = GetPrivateProfileSectionW(L"CVars", g_secBuf, 8192, g_cfgPath);
-    }
     for (wc* p = g_secBuf; *p; p += wlen(p) + 1) {
         if (*p == ';') continue;
         wc* eq = p; while (*eq && *eq != '=') eq++;
@@ -1037,7 +1033,7 @@ static void FixCamera(u64 pawn) {
             b &= (u8)~g_camMask; WPM(cam + oCamConstrain, &b, 1);
         }
     }
-    if (C.lodIgnoreFov && oCamFovLod >= 0 && g_camFovMask) {
+    if (false && oCamFovLod >= 0 && g_camFovMask) {
         u8 b = Rd<u8>(cam + oCamFovLod);
         if (b & g_camFovMask) {
             if (cam != g_camFovFixed) { g_camFovFixed = cam; Log("camera: LOD/cull no longer scaled by wide FOV"); }
@@ -1644,11 +1640,10 @@ static u32 __stdcall Worker(void*) {
         if (C.noNoise && g_kamikazeActive) KillInterference(g_pawn);
         if (g_ewBuilt) ApplyEw(C.noNoise && g_kamikazeActive && !g_userHidden);
         ApplyScreenPercentage(g_kamikazeActive && C.camHeight > 0 && !g_userHidden, g_winH);
-        { static u64 lastCv = 0; static i32 lastOff = 0; if (now - lastCv > 2000 || lastOff != g_gfxOff) { bool tog = lastOff != g_gfxOff; lastCv = now; lastOff = g_gfxOff; ApplyCVars(); if (tog && g_folN && ScanObjects()) FoliageCull(!g_gfxOff); } }
         {
             u64 wld = Rd<u64>(g_base + RVA_GWORLD);
             if (wld != lastWorld) { lastWorld = wld; wreckAt = now + 3000; g_ewBuilt = false; g_ewN = 0; g_naniteLogged = false; g_landOk = 0; g_folN = 0; g_folClsN = 0; g_kbPN = 0; if (g_kbK) memset(g_kbK, 0, (u64)KBC * 8); g_vehBase = 0; g_oDestroyTime = -1; if (g_vk) { memset(g_vk, 0, (u64)VHC * 8); } }
-            if (IsPtr(wld) && now >= wreckAt) { wreckAt = now + 10000; if (ScanObjects()) { if (!g_landOk) FindLandscape(); if (C.folCull > 1.001 || C.folMin > 0) FoliageCull(!g_gfxOff); if (C.keepWrecks) KeepWrecks(); if (C.knockScale < 0.999) Knockback(); if (!g_ewBuilt || g_ewN == 0) BuildEwList(); } }
+            if (IsPtr(wld) && now >= wreckAt) { wreckAt = now + 10000; if (ScanObjects()) { if (!g_landOk) FindLandscape(); if (C.keepWrecks) KeepWrecks(); if (C.knockScale < 0.999) Knockback(); if (!g_ewBuilt || g_ewN == 0) BuildEwList(); } }
         }
         u64 pawn = g_pawn;
         if (pawn != hudPawn) { hudPawn = pawn; g_vsN = 0; g_hudCur = 0; }

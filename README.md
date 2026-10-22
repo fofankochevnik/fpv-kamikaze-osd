@@ -41,7 +41,6 @@
 |---|---|
 | F6 | Показать / скрыть OSD (родной HUD при этом возвращается) |
 | F7 | Сбросить таймер и mAh |
-| F8 | Включить / выключить графические правки (для сравнения) |
 | F9 | Записать диагностический дамп в `osd_dump.txt` |
 
 ## Настройки
@@ -49,9 +48,8 @@
 Всё лежит в `OSD_Overlay\config.ini`. Основное:
 
 - `[OSD]`: шрифт, размер, `AltitudeRelative=1` даёт высоту от точки старта вместо уровня моря карты, `UseTemplateImage=1` возвращает старый OSD-шаблон картинкой
-- `[Hud]`: `CameraHeight` (720 по умолчанию, 0 выключает), `KeepWrecks`, `KnockbackScale` (0 без отбрасывания, 1 как в игре), `NoInterference`, `FoliageMinCullDistance` в сантиметрах (50000 = 500 м)
+- `[Hud]`: `CameraHeight` (720 по умолчанию, 0 выключает), `KeepWrecks`, `KnockbackScale` (0 без отбрасывания, 1 как в игре), `NoInterference`
 - `[Impact]`: время заморозки, время экрана NO IMAGE, прозрачность серого, `Enable=0` выключает эффект
-- `[CVars]`: консольные переменные движка, которые оверлей выставляет сам. Если проседает FPS, уменьши `FoliageMinCullDistance`, `r.Shadow.DistanceScale` и подними `r.Nanite.MaxPixelsPerEdge`
 
 Если что-то не работает, смотри `osd_log.txt` рядом с exe.
 
