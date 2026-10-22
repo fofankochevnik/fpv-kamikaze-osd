@@ -1623,60 +1623,64 @@ static void ApplyEw(bool on) {
 
 
 static volatile i32 g_fpsShown = 0; static u64 g_fpsAddr = 0;
-struct FpsCand { u32 off, last, d0; };
+static u32 g_fpsC[1024]; static i32 g_fpsCN = -1;
+static void FpsCollect() {
+    g_fpsCN = 0;
+    i32 pe = Rd<i32>(g_base + 0x3C); u16 ns = Rd<u16>(g_base + pe + 6), osz = Rd<u16>(g_base + pe + 20);
+    u64 tR = 0, tS = 0, dR = 0, dS = 0;
+    for (i32 i = 0; i < ns; i++) { u64 sh = g_base + pe + 24 + osz + (u64)i * 40; char nm[9]; RPM(sh, nm, 8); nm[8] = 0; if (seq(nm, ".text")) { tS = Rd<u32>(sh + 8); tR = Rd<u32>(sh + 12); } if (seq(nm, ".data")) { dS = Rd<u32>(sh + 8); dR = Rd<u32>(sh + 12); } }
+    if (!tR || !dR) return;
+    const u64 CH_ = 0x100000; u8* b = (u8*)VirtualAlloc(0, CH_ + 16, 0x3000, 4); if (!b) return;
+    for (u64 o = 0; o < tS && g_fpsCN < 1024; o += CH_ - 8) {
+        u64 n = tS - o < CH_ ? tS - o : CH_;
+        if (!RPM(g_base + tR + o, b, n)) { memset(b, 0, n); for (u64 q = 0; q < n; q += 0x1000) RPM(g_base + tR + o + q, b + q, n - q < 0x1000 ? n - q : 0x1000); }
+        for (u64 k = 1; k + 7 <= n; k++) {
+            if (b[k] != 0xFF || b[k + 1] != 0x05) continue;
+            bool q64 = b[k - 1] == 0x48; i32 L = 6;
+            if (!q64 && (b[k - 1] == 0x49 || b[k - 1] == 0x4C || b[k - 1] == 0x41 || b[k - 1] == 0x40)) continue;
+            i32 disp = *(i32*)(b + k + 2); u64 t = tR + o + k + L + (i64)disp;
+            if (t < dR || t + 4 > dR + dS) continue;
+            bool dup = false; for (i32 z = 0; z < g_fpsCN; z++) if (g_fpsC[z] == (u32)t) { dup = true; break; }
+            if (!dup && g_fpsCN < 1024) g_fpsC[g_fpsCN++] = (u32)t;
+        }
+    }
+    VirtualFree(b, 0, 0x8000);
+    static char B_[64]; SB sb{ B_, 0, 64 }; sb.s("fps: inc targets="); sb.i(g_fpsCN); sb.z(); Log(B_);
+}
 static void FpsTick(u64 now) {
-    static u64 dRva = 0, dSize = 0, tPrev = 0, tFound = 0; static u8* bufA = 0; static u8* bufB = 0;
-    static FpsCand* cand = 0; static i32 nc = 0, round = 0; static bool tried = false;
-    static u32 lastVal = 0; static u64 lastT = 0; static double smooth = 0;
+    static u64 lastT = 0, nextTry = 0, tPrev = 0; static u32 lastVal = 0; static double smooth = 0; static i32 stall = 0;
+    static u32 pv[1024]; static u32 d0[1024]; static u8 ok[1024]; static i32 round = -1;
     if (g_fpsAddr) {
         if (now - lastT < 500) return;
         u32 v = Rd<u32>(g_fpsAddr);
-        if (lastT) { u32 d = v - lastVal; double dt = (double)(now - lastT) / 1000.0; double f = d / dt; if (f > 1000) f = 0; smooth = smooth <= 0 ? f : smooth * 0.5 + f * 0.5; g_fpsShown = (i32)(smooth + 0.5); }
+        if (lastT) {
+            u32 d = v - lastVal; double f = d * 1000.0 / (double)(now - lastT); if (f > 1000) f = 0;
+            smooth = smooth <= 0 ? f : smooth * 0.5 + f * 0.5; g_fpsShown = (i32)(smooth + 0.5);
+            if (d == 0) { if (++stall >= 20) { g_fpsAddr = 0; stall = 0; round = -1; nextTry = now; Log("fps: counter stalled, searching again"); } } else stall = 0;
+        }
         lastVal = v; lastT = now; return;
     }
-    if (tried && !bufA) return;
-    if (!tried) {
-        tried = true;
-        i32 pe = Rd<i32>(g_base + 0x3C); u16 ns = Rd<u16>(g_base + pe + 6), osz = Rd<u16>(g_base + pe + 20);
-        for (i32 i = 0; i < ns; i++) { u64 sh = g_base + pe + 24 + osz + (u64)i * 40; char nm[9]; RPM(sh, nm, 8); nm[8] = 0; if (seq(nm, ".data")) { dSize = Rd<u32>(sh + 8); dRva = Rd<u32>(sh + 12); break; } }
-        if (!dRva || !dSize || dSize > 0x4000000) return;
-        bufA = (u8*)VirtualAlloc(0, dSize + 16, 0x3000, 4); bufB = (u8*)VirtualAlloc(0, dSize + 16, 0x3000, 4); cand = (FpsCand*)VirtualAlloc(0, 65536 * sizeof(FpsCand), 0x3000, 4);
-        if (!bufA || !bufB || !cand) { bufA = 0; return; }
-        for (u64 o = 0; o < dSize; o += 0x1000) RPM(g_base + dRva + o, bufA + o, (dSize - o) < 0x1000 ? (dSize - o) : 0x1000);
-        tPrev = now; return;
+    if (g_fpsCN < 0) FpsCollect();
+    if (g_fpsCN <= 0 || now < nextTry) return;
+    if (round < 0) { for (i32 k = 0; k < g_fpsCN; k++) { pv[k] = Rd<u32>(g_base + g_fpsC[k]); ok[k] = 1; d0[k] = 0; } tPrev = now; round = 0; return; }
+    if (now - tPrev < 500) return;
+    double dt = (double)(now - tPrev); tPrev = now;
+    for (i32 k = 0; k < g_fpsCN; k++) {
+        u32 v = Rd<u32>(g_base + g_fpsC[k]); u32 d = v - pv[k]; pv[k] = v;
+        if (!ok[k]) continue;
+        double rate = d * 1000.0 / dt;
+        if (rate < 5 || rate > 700) { ok[k] = 0; continue; }
+        if (round == 0) d0[k] = d; else { double r = (double)d / (double)d0[k]; if (r < 0.33 || r > 3.0) ok[k] = 0; }
     }
-    if (now - tPrev < 600) return;
-    for (u64 o = 0; o < dSize; o += 0x1000) RPM(g_base + dRva + o, bufB + o, (dSize - o) < 0x1000 ? (dSize - o) : 0x1000);
-    double dtMs = (double)(now - tPrev);
-    if (round == 0) {
-        for (u64 o = 0; o + 4 <= dSize && nc < 65536; o += 4) {
-            u32 a = *(u32*)(bufA + o), b = *(u32*)(bufB + o); u32 d = b - a;
-            double rate = d * 1000.0 / dtMs;
-            if (d < 3 || rate > 600 || rate < 4) continue;
-            if (rate > 920 && rate < 1090) continue;
-            cand[nc].off = (u32)o; cand[nc].last = b; cand[nc].d0 = d; nc++;
-        }
-    } else {
-        i32 w = 0;
-        for (i32 k = 0; k < nc; k++) {
-            u32 b = *(u32*)(bufB + cand[k].off); u32 d = b - cand[k].last;
-            double rate = d * 1000.0 / dtMs; double r0 = (double)cand[k].d0;
-            if (d < 3 || rate > 600 || rate < 4) continue;
-            if (rate > 920 && rate < 1090) continue;
-            double ratio = (double)d / r0; if (ratio < 0.5 || ratio > 2.0) continue;
-            cand[w] = cand[k]; cand[w].last = b; w++;
-        }
-        nc = w;
-    }
-    u8* t = bufA; bufA = bufB; bufB = t; tPrev = now; round++;
-    if (round >= 5 || nc == 0) {
-        if (nc > 0) {
-            i32 best = -1, bestN = 0;
-            for (i32 k = 0; k < nc; k++) { i32 c = 0; for (i32 q = 0; q < nc; q++) { double x = cand[k].last - 0.0, y = cand[q].last - 0.0; (void)x; (void)y; double a = (double)cand[k].d0, b2 = (double)cand[q].d0; if (b2 > a * 0.85 && b2 < a * 1.15) c++; } if (c > bestN) { bestN = c; best = k; } }
-            if (best >= 0) { g_fpsAddr = g_base + dRva + cand[best].off; static char B_[128]; SB sb{ B_, 0, 128 }; sb.s("fps counter: rva="); sb.h(dRva + cand[best].off); sb.s(" candidates="); sb.i(nc); sb.s(" group="); sb.i(bestN); sb.z(); Log(B_); }
-        } else Log("fps counter: not found");
-        VirtualFree(bufA, 0, 0x8000); VirtualFree(bufB, 0, 0x8000); VirtualFree(cand, 0, 0x8000); bufA = 0; bufB = 0; cand = 0;
-    }
+    round++;
+    if (round < 4) return;
+    i32 best = -1, bestN = 0;
+    for (i32 k = 0; k < g_fpsCN; k++) { if (!ok[k]) continue; i32 c = 0; for (i32 q = 0; q < g_fpsCN; q++) if (ok[q] && d0[q] * 100 >= d0[k] * 90 && d0[q] * 100 <= d0[k] * 110) c++; if (c > bestN || (c == bestN && best >= 0 && d0[k] > d0[best])) { bestN = c; best = k; } }
+    i32 alive = 0; for (i32 k = 0; k < g_fpsCN; k++) alive += ok[k];
+    static char B_[128]; SB sb{ B_, 0, 128 };
+    if (best >= 0) { g_fpsAddr = g_base + g_fpsC[best]; lastT = 0; smooth = 0; sb.s("fps counter: rva="); sb.h(g_fpsC[best]); sb.s(" alive="); sb.i(alive); sb.s(" group="); sb.i(bestN); sb.s(" ~fps="); sb.i((i64)(d0[best] * 1000.0 / dt)); }
+    else { sb.s("fps counter: none this pass, retry in 5 s"); nextTry = now + 5000; }
+    sb.z(); Log(B_); round = -1;
 }
 static u32 __stdcall Worker(void*) {
     u64 lastInit = 0, lastHud = 0; i32 lastSerial = -1; u64 dumpAt = 0; i32 initTries = 0; u64 hudPawn = 0;
