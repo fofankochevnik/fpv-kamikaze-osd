@@ -1,0 +1,6 @@
+@echo off
+echo Starting FPV Drone OSD Overlay...
+start "" "%~dp0OSD_Overlay\FPV_OSD_Overlay.exe"
+timeout /t 1 /nobreak >nul
+echo Starting FPV Kamikaze Drone...
+start "" "%~dp0FPVKamikazeDrone\Binaries\Win64\FPVKamikazeDrone-Win64-Shipping.exe"
