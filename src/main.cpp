@@ -110,7 +110,10 @@ IMP i32 __stdcall GdipSetSmoothingMode(void*, i32);
 IMP i32 __stdcall GdipDrawImageRectI(void*, void*, i32, i32, i32, i32);
 IMP i32 __stdcall GdipCreateFontFamilyFromName(const wc*, void*, void**);
 IMP i32 __stdcall GdipGetGenericFontFamilySerif(void**);
+IMP i32 __stdcall GdipGetGenericFontFamilyMonospace(void**);
+IMP i32 __stdcall GdipDeleteFont(void*);
 IMP i32 __stdcall GdipCreateFont(void*, float, i32, i32, void**);
+IMP i32 __stdcall GdipMeasureString(void*, const wc*, i32, void*, const RectF*, void*, RectF*, i32*, i32*);
 IMP i32 __stdcall GdipCreateSolidFill(u32, void**);
 IMP i32 __stdcall GdipCreateStringFormat(i32, u16, void**);
 IMP i32 __stdcall GdipSetStringFormatAlign(void*, i32);
@@ -196,7 +199,7 @@ static void Log(const char* a, const char* b = 0, const char* c = 0, const char*
 struct Config {
     i32 startTimer, cells;
     double mahStart, packMah, ampsIdleMin, ampsIdleMax, ampsMaxMin, ampsMaxMax;
-    wc font[64]; double fontSize; i32 fontBold;
+    wc font[64]; double fontSize; i32 fontBold; wc warnFont[64]; i32 warnOn; double warnThr;
     i32 invertPitch, altRelative, useTemplate;
     char kamikazeMatch[256], reconMatch[256];
     i32 fallbackShow;
@@ -287,11 +290,16 @@ static const char* DEFAULT_CFG =
     "\r\n"
     "[Impact]\r\n"
     "Enable=1\r\n"
-    "FreezeSeconds=0.7\r\n"
-    "NoImageSeconds=3.0\r\n"
+    "FreezeSeconds=1.3\r\n"
+    "NoImageSeconds=2.0\r\n"
     "GrayAlpha=0.2\r\n"
     "LookbackMs=0\r\n"
     "MinSpeed=0\r\n"
+    "\r\n"
+    "[Warn]\r\n"
+    "Enable=1\r\n"
+    "Throttle=75\r\n"
+    "Font=Courier New\r\n"
     "\r\n"
     "[Hotkeys]\r\n"
     "Toggle=0x75\r\n"
@@ -318,7 +326,7 @@ static void LoadConfig() {
     IniA(L"Telemetry", L"BatteryProp", L"", C.batteryProp, 64);
     C.keyThrUp = IniI(L"Telemetry", L"ThrottleUpKey", 0); C.keyThrDown = IniI(L"Telemetry", L"ThrottleDownKey", 0);
     C.hideHud = IniI(L"Hud", L"HideGameHud", 1); C.fullCam = IniI(L"Hud", L"FullscreenCamera", 1); C.keepWrecks = IniI(L"Hud", L"KeepWrecks", 1); C.noNoise = IniI(L"Hud", L"NoInterference", 1); C.camHeight = IniI(L"Hud", L"CameraHeight", 720); C.lodIgnoreFov = IniI(L"Hud", L"LodIgnoreFov", 1); C.knockScale = IniD(L"Hud", L"KnockbackScale", 0.0); C.folCull = IniD(L"Hud", L"FoliageCullScale", 1.0); C.folMin = IniD(L"Hud", L"FoliageMinCullDistance", 40000); C.folFade = IniD(L"Hud", L"FoliageFadeStart", 0.7);
-    C.impactFx = IniI(L"Impact", L"Enable", 1); C.frzTime = IniD(L"Impact", L"FreezeSeconds", 0.7); C.noImgTime = IniD(L"Impact", L"NoImageSeconds", 3.0);
+    C.impactFx = IniI(L"Impact", L"Enable", 1); C.frzTime = IniD(L"Impact", L"FreezeSeconds", 1.3); C.noImgTime = IniD(L"Impact", L"NoImageSeconds", 2.0); C.warnOn = IniI(L"Warn", L"Enable", 1); C.warnThr = IniD(L"Warn", L"Throttle", 75); wcpy(C.warnFont, Ini(L"Warn", L"Font", L"Courier New"), 64);
     C.grayA = IniD(L"Impact", L"GrayAlpha", 0.2); C.frzBack = IniD(L"Impact", L"LookbackMs", 0); C.frzSpeed = IniD(L"Impact", L"MinSpeed", 0); C.hideImages = IniI(L"Hud", L"HideImages", 1); C.hideText = IniI(L"Hud", L"HideText", 1);
     IniA(L"Hud", L"HudWidgets", L"WBP_FPV_Drone_C", C.hudWidgets, 256);
     IniA(L"Hud", L"KeepWidgets", L"", C.keepWidgets, 512);
@@ -2036,6 +2044,24 @@ static bool HorizonLine(i32 W, i32 H, double* x0, double* y0, double* ux, double
     double dx = bx - ax, dy = by - ay, l = Sqrt(dx * dx + dy * dy); if (l < 1) return false;
     *x0 = cx; *y0 = cy; *ux = dx / l; *uy = dy / l; return true;
 }
+static void* g_fontWarn = 0; static float g_warnSize = 0;
+static const wc* WARN_TXT = L"\x0421\x043D\x0438\x0437\x044C \x0441\x043A\x043E\x0440\x043E\x0441\x0442\x044C!";
+static void DrawWarn() {
+    const float X0 = 163.0f, X1 = 651.0f, Y0 = 152.0f * CH / 572.0f;
+    if (!g_fontWarn) {
+        void* fam = 0; if (GdipCreateFontFamilyFromName(C.warnFont, 0, &fam) != 0) GdipGetGenericFontFamilyMonospace(&fam);
+        void* f = 0; GdipCreateFont(fam, 40.0f, 1, 2, &f); if (!f) return;
+        RectF lay = { 0, 0, 4000, 400 }, bb = { 0, 0, 0, 0 }; i32 cp = 0, ln = 0;
+        GdipMeasureString(g_gpG, WARN_TXT, wlen(WARN_TXT), f, &lay, g_fmtL, &bb, &cp, &ln);
+        float sz = bb.w > 10 ? 40.0f * (X1 - X0) / bb.w : 40.0f;
+        GdipDeleteFont(f); GdipCreateFont(fam, sz, 1, 2, &g_fontWarn); g_warnSize = sz;
+        if (!g_fontWarn) return;
+    }
+    i32 n = wlen(WARN_TXT);
+    RectF r = { X0 - g_warnSize * 0.12f, Y0 - g_warnSize * 0.18f, 900.0f, g_warnSize * 1.6f };
+    for (i32 dy = -2; dy <= 3; dy++) for (i32 dx = -2; dx <= 3; dx++) { if (!dx && !dy) continue; if (dx * dx + dy * dy > 10) continue; RectF o = { r.x + dx, r.y + dy, r.w, r.h }; GdipDrawString(g_gpG, WARN_TXT, n, g_fontWarn, &o, g_fmtL, g_brB); }
+    GdipDrawString(g_gpG, WARN_TXT, n, g_fontWarn, &r, g_fmtL, g_brW);
+}
 static void DrawAimAndHorizon(i32 W, i32 H) {
     double x0, y0, ux, uy;
     if (HorizonLine(W, H, &x0, &y0, &ux, &uy)) {
@@ -2116,6 +2142,7 @@ static void ComposeImpact(i32 w, i32 h, bool phase2) {
         for (i32 x = 0; x < w; x++) {
             u32 o = src[g_xmap[x]], b = fr[x];
             u32 oa = o >> 24, ia = 255 - oa;
+            if (!oa && !phase2) { dst[x] = 0xFF000000u | b; continue; }
             u32 r = (o >> 16 & 255) + ((b >> 16 & 255) * ia) / 255, g = (o >> 8 & 255) + ((b >> 8 & 255) * ia) / 255, bl = (o & 255) + ((b & 255) * ia) / 255;
             if (phase2) { u32 ga = (u32)(C.grayA * 255), gi = 255 - ga; r = (r * gi + 128 * ga) / 255; g = (g * gi + 128 * ga) / 255; bl = (bl * gi + 128 * ga) / 255; }
             if (r > 255) r = 255; if (g > 255) g = 255; if (bl > 255) bl = 255;
@@ -2161,8 +2188,11 @@ static bool Render(i32 w, i32 h) {
     FmtW(s[8], (double)(i64)(T.gas + 0.5), 0, false, 0);
     FmtW(s[9], T.txg, 1, false, 0);
     s[10][0] = 'F'; s[10][1] = 'P'; s[10][2] = 'S'; s[10][3] = ':'; s[10][4] = ' '; FmtW(s[10] + 5, (double)g_fpsShown, 0, false, 0);
+    static u64 warnStart = 0; bool warnVis = false;
+    if (C.warnOn && T.gas >= C.warnThr) { u64 tn = GetTickCount64(); if (!warnStart) warnStart = tn; warnVis = ((tn - warnStart) % 1000) < 500; } else warnStart = 0;
+    s[11][0] = warnVis ? 'W' : '-'; s[11][1] = 0;
     wc key[512]; key[0] = 0;
-    for (i32 i = 0; i < 11; i++) { wcat(key, s[i], 512); wcat(key, L"|", 512); }
+    for (i32 i = 0; i < 12; i++) { wcat(key, s[i], 512); wcat(key, L"|", 512); }
     {
         double x0 = 0, y0 = 0, ux = 0, uy = 0; bool hz = HorizonLine(w, h, &x0, &y0, &ux, &uy);
         wc t[64]; i32 n = 0; i32 v[5] = { 0, hz ? (i32)x0 : -9999, hz ? (i32)y0 : -9999, hz ? (i32)(ux * 1000) : 0, hz ? (i32)(uy * 1000) : 0 };
@@ -2186,6 +2216,7 @@ static bool Render(i32 w, i32 h) {
     Text(s[8], 924, 409, true);
     Text(s[9], 68, 444, false);
     Text(s[10], 447, 531, false);
+    if (warnVis) DrawWarn();
     DrawAimAndHorizon(w, h);
     EnsureDib(w, h);
     Upscale();

@@ -23,3 +23,6 @@ GdipSetPenLineCap197819
 GdipDrawLine
 GdipDeleteGraphics
 GdipDisposeImage
+GdipMeasureString
+GdipGetGenericFontFamilyMonospace
+GdipDeleteFont
