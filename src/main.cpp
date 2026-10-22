@@ -38,6 +38,9 @@ IMP i32 __stdcall WriteProcessMemory(HANDLE, void*, const void*, u64, u64*);
 IMP i32 __stdcall GetExitCodeProcess(HANDLE, u32*);
 IMP i32 __stdcall K32EnumProcessModules(HANDLE, void**, u32, u32*);
 IMP void __stdcall Sleep(u32);
+IMP HANDLE __stdcall CreateEventW(void*, i32, i32, const wc*);
+IMP i32 __stdcall SetEvent(HANDLE);
+IMP u32 __stdcall WaitForSingleObject(HANDLE, u32);
 IMP void __stdcall ExitProcess(u32);
 IMP i32 __stdcall QueryPerformanceCounter(i64*);
 IMP i32 __stdcall QueryPerformanceFrequency(i64*);
@@ -707,6 +710,29 @@ static u64 ReadPawn() {
     if (!pawn) return 0;
     g_link = 3;
     return pawn;
+}
+
+static u64 PeekPawn() {
+    u64 world = Rd<u64>(g_base + RVA_GWORLD); if (!IsPtr(world)) return 0;
+    u64 gi = Rd<u64>(world + oOGI); if (!IsPtr(gi)) return 0;
+    u64 arr = Rd<u64>(gi + oLP); if (!IsPtr(arr)) return 0;
+    u64 lp = Rd<u64>(arr); if (!IsPtr(lp)) return 0;
+    u64 pc = Rd<u64>(lp + oPCref); if (!IsPtr(pc)) return 0;
+    u64 pawn = Rd<u64>(pc + oAckPawn);
+    if (!IsPtr(pawn) && oCtrlPawn >= 0) pawn = Rd<u64>(pc + oCtrlPawn);
+    if (!IsPtr(pawn)) pawn = 0;
+    if (oPCM >= 0 && oViewTarget >= 0 && oVTTarget >= 0) { u64 pcm = Rd<u64>(pc + oPCM); if (IsPtr(pcm)) { u64 vt = Rd<u64>(pcm + oViewTarget + oVTTarget); if (IsPtr(vt) && vt != pc) pawn = vt; } }
+    return pawn;
+}
+static HANDLE g_wakeEvt = 0; static volatile u64 g_watchPawn = 0; static volatile i32 g_watchOn = 0;
+static u32 __stdcall PawnWatch(void*) {
+    for (;;) {
+        if (!g_watchOn || !g_watchPawn || !g_proc) { Sleep(5); continue; }
+        u64 p = PeekPawn();
+        if (p != g_watchPawn) { g_watchOn = 0; if (g_wakeEvt) SetEvent(g_wakeEvt); }
+        Sleep(1);
+    }
+    return 0;
 }
 
 static i32 g_slateVis = -1; static bool g_slateVisTried = false;
@@ -2028,7 +2054,7 @@ static void DrawAimAndHorizon(i32 W, i32 H) {
 
 struct CapFrame { HDC dc; HANDLE bmp; u32* bits; i32 w, h; u64 t; bool ok; };
 static CapFrame g_ring[8]; static volatile i32 g_ringIdx = 0;
-static volatile i32 g_capOn = 0, g_capBusy = 0, g_frozen = 0;
+static volatile i32 g_capOn = 0, g_capBusy = 0, g_frozen = 0, g_capSlot = -1;
 static volatile i32 g_capX = 0, g_capY = 0, g_capW = 0, g_capH = 0;
 static volatile u64 g_manualKeyMs = 0;
 static u64 NowMs() { i64 c, f; QueryPerformanceCounter(&c); QueryPerformanceFrequency(&f); return (u64)(c / (f / 1000)); }
@@ -2047,13 +2073,14 @@ static u32 __stdcall CaptureThread(void*) {
         g_capBusy = 1;
         if (g_frozen) { g_capBusy = 0; continue; }
         i32 i = (g_ringIdx + 1) & 7;
+        g_capSlot = i;
         CapFrame& f = g_ring[i];
         EnsureCap(f, g_capW, g_capH);
         u64 t0 = NowMs();
         HDC scr = GetDC(0);
         if (f.ok && BitBlt(f.dc, 0, 0, f.w, f.h, scr, g_capX, g_capY, 0x00CC0020)) { f.t = t0; g_ringIdx = i; }
         ReleaseDC(0, scr);
-        g_capBusy = 0;
+        g_capSlot = -1; g_capBusy = 0;
         u64 t1 = NowMs(); sum += t1 - t0; cnt++;
         if (t1 - lastLog > 30000 && cnt) { lastLog = t1; static char B_[96]; SB sb{ B_, 0, 96 }; sb.s("capture: avg ms="); sb.f((double)sum / cnt, 1); sb.z(); Log(B_); sum = 0; cnt = 0; }
         u64 el = NowMs() - t0; if (el < 16) Sleep((u32)(16 - el));
@@ -2063,14 +2090,14 @@ static u32 __stdcall CaptureThread(void*) {
 static u32* g_frzBuf = 0; static i32 g_frzW = 0, g_frzH = 0;
 static bool GrabFreezeFrame(u64 trigMs, u64 pickMs, i32 w, i32 h) {
     g_frozen = 1;
-    for (i32 k = 0; k < 200 && g_capBusy; k++) Sleep(1);
+    i32 busy = g_capSlot;
     i32 best = -1; u64 bestT = 0; i32 newest = -1; u64 newT = 0;
     for (i32 i = 0; i < 8; i++) {
-        CapFrame& f = g_ring[i]; if (!f.ok || !f.t || f.w != w || f.h != h) continue;
+        CapFrame& f = g_ring[i]; if (i == busy || !f.ok || !f.t || f.w != w || f.h != h) continue;
         if (f.t > newT) { newT = f.t; newest = i; }
         if (f.t + (u64)C.frzBack <= pickMs && f.t > bestT) { bestT = f.t; best = i; }
     }
-    if (best < 0) { u64 oT = ~0ull; for (i32 i = 0; i < 8; i++) { CapFrame& f = g_ring[i]; if (f.ok && f.t && f.w == w && f.h == h && f.t < oT) { oT = f.t; best = i; } } }
+    if (best < 0) { u64 oT = ~0ull; for (i32 i = 0; i < 8; i++) { CapFrame& f = g_ring[i]; if (i != busy && f.ok && f.t && f.w == w && f.h == h && f.t < oT) { oT = f.t; best = i; } } }
     if (best < 0) best = newest;
     if (best < 0) return false;
     if (!g_frzBuf || g_frzW != w || g_frzH != h) { g_frzBuf = (u32*)VirtualAlloc(0, (u64)w * h * 4, 0x3000, 4); g_frzW = w; g_frzH = h; }
@@ -2199,6 +2226,8 @@ extern "C" void Entry() {
     WNDCLASSEXW wcx; memset(&wcx, 0, sizeof(wcx)); wcx.cbSize = sizeof(wcx); wcx.proc = WndProc; wcx.inst = GetModuleHandleW(0); wcx.cls = L"FPV_OSD_Overlay_v2";
     RegisterClassExW(&wcx);
     HWND ov = CreateWindowExW(0x80000 | 0x20 | 0x8 | 0x80 | 0x08000000, L"FPV_OSD_Overlay_v2", L"FPV OSD", 0x80000000, 0, 0, CW, CH, 0, 0, wcx.inst, 0);
+    { void* u = GetModuleHandleW(L"user32.dll"); typedef i32 (__stdcall* SWDA)(HWND, u32); SWDA f = u ? (SWDA)GetProcAddress(u, "SetWindowDisplayAffinity") : 0; if (f) { if (!f(ov, 0x11)) Log("overlay: exclude-from-capture not supported"); } }
+    g_wakeEvt = CreateEventW(0, 0, 0, 0); CreateThread(0, 0, PawnWatch, 0, 0, 0);
     if (!ov) ExitProcess(1);
     RegisterHotKey(ov, 1, 0x4000, C.keyToggle); RegisterHotKey(ov, 2, 0x4000, C.keyReset); RegisterHotKey(ov, 3, 0x4000, C.keyDump); RegisterHotKey(ov, 4, 0x4000, 0x77);
     CreateThread(0, 0, Worker, 0, 0, 0);
@@ -2262,6 +2291,19 @@ extern "C" void Entry() {
                             }
                         }
                     }
+                    if (!trigger && g_pi.dgOff >= 0 && IsPtr(root)) {
+                        static double pz = 0; static u64 pzT = 0; static u64 pzPawn = 0; static double vz = 0; static u64 loopMs = 30; static u64 lastIt = 0;
+                        if (lastIt) { u64 e = trigMs - lastIt; loopMs = (loopMs * 3 + (e > 200 ? 200 : e)) / 4; } lastIt = trigMs;
+                        double z = Rd<double>(root + oRelLoc + 16);
+                        if (pzPawn != pawn) { pzPawn = pawn; pz = z; pzT = trigMs; vz = 0; }
+                        else if (z != pz && trigMs > pzT) { vz = (z - pz) / ((trigMs - pzT) / 1000.0); pz = z; pzT = trigMs; }
+                        float dg = Rd<float>(pawn + g_pi.dgOff);
+                        double lead = (loopMs * 1.5 + 17.0) / 1000.0; if (lead > 0.12) lead = 0.12;
+                        if (vz < -300.0 && dg > 1.0f && dg < 600.0f && dg / -vz < lead) {
+                            trigger = true; softTrig = true; pickMs = trigMs;
+                            static char B_[128]; SB sb{ B_, 0, 128 }; sb.s("impact: ground ahead dg="); sb.f(dg, 0); sb.s("cm vz="); sb.f(vz / 100.0, 1); sb.s("m/s lead ms="); sb.i((i64)(lead * 1000)); sb.z(); Log(B_);
+                        }
+                    }
                     bool br = g_pi.brokenOff >= 0 && (Rd<u8>(pawn + g_pi.brokenOff) & g_pi.brokenMask);
                     if (br && !prevBroken && !trigger) { trigger = true; pickMs = lastFastT ? lastFastT : trigMs - 40; Log("impact: drone broken"); }
                     prevBroken = br;
@@ -2287,6 +2329,7 @@ extern "C" void Entry() {
                 if (k != wasK) { wasK = k; }
             }
         }
+        g_watchPawn = (g_reflReady && pawn && g_pi.kamikaze && frzState == 0) ? pawn : 0; g_watchOn = g_watchPawn ? 1 : 0;
         bool kam = g_reflReady ? (pawn && g_pi.kamikaze) : (C.fallbackShow != 0);
         g_kamikazeActive = (g_reflReady && pawn && g_pi.kamikaze) ? 1 : 0;
         if (g_kamikazeActive) FixCamera(pawn);
@@ -2302,7 +2345,7 @@ extern "C" void Entry() {
             }
             if (frzState) {
                 u64 el = NowMs() - frzStart;
-                if (frzState == 1 && frzSoft && el >= (u64)(C.frzTime * 1000)) {
+                if (frzState == 1 && frzSoft && el >= 300) {
                     frzSoft = false;
                     u64 pn = ReadPawn();
                     bool br = pn && pn == frzPawn && g_pi.brokenOff >= 0 && (Rd<u8>(pn + g_pi.brokenOff) & g_pi.brokenMask);
@@ -2336,6 +2379,6 @@ extern "C" void Entry() {
         }
         if (!shown) { ShowWindow(ov, 4); shown = true; lastTop = 0; }
         if (tick - lastTop > 1000) { lastTop = tick; SetWindowPos(ov, (HWND)(i64)-1, 0, 0, 0, 0, 0x1 | 0x2 | 0x10); }
-        Sleep(15);
+        WaitForSingleObject(g_wakeEvt, 15);
     }
 }

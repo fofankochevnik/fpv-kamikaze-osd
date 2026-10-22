@@ -33,3 +33,6 @@ GetFileAttributesW
 VirtualQueryEx
 GetPrivateProfileSectionW
 VirtualFree
+CreateEventW
+SetEvent
+WaitForSingleObject
