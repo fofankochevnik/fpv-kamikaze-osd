@@ -274,7 +274,7 @@ static const char* DEFAULT_CFG =
     "LodIgnoreFov=1\r\n"
     "KnockbackScale=0.0\r\n"
     "FoliageCullScale=1.0\r\n"
-    "FoliageMinCullDistance=50000\r\n"
+    "FoliageMinCullDistance=40000\r\n"
     "FoliageFadeStart=0.7\r\n"
     "HideImages=1\r\n"
     "HideText=1\r\n"
@@ -313,7 +313,7 @@ static void LoadConfig() {
     IniA(L"Telemetry", L"ThrottleProp", L"", C.throttleProp, 64);
     IniA(L"Telemetry", L"BatteryProp", L"", C.batteryProp, 64);
     C.keyThrUp = IniI(L"Telemetry", L"ThrottleUpKey", 0); C.keyThrDown = IniI(L"Telemetry", L"ThrottleDownKey", 0);
-    C.hideHud = IniI(L"Hud", L"HideGameHud", 1); C.fullCam = IniI(L"Hud", L"FullscreenCamera", 1); C.keepWrecks = IniI(L"Hud", L"KeepWrecks", 1); C.noNoise = IniI(L"Hud", L"NoInterference", 1); C.camHeight = IniI(L"Hud", L"CameraHeight", 720); C.lodIgnoreFov = IniI(L"Hud", L"LodIgnoreFov", 1); C.knockScale = IniD(L"Hud", L"KnockbackScale", 0.0); C.folCull = IniD(L"Hud", L"FoliageCullScale", 1.0); C.folMin = IniD(L"Hud", L"FoliageMinCullDistance", 50000); C.folFade = IniD(L"Hud", L"FoliageFadeStart", 0.7);
+    C.hideHud = IniI(L"Hud", L"HideGameHud", 1); C.fullCam = IniI(L"Hud", L"FullscreenCamera", 1); C.keepWrecks = IniI(L"Hud", L"KeepWrecks", 1); C.noNoise = IniI(L"Hud", L"NoInterference", 1); C.camHeight = IniI(L"Hud", L"CameraHeight", 720); C.lodIgnoreFov = IniI(L"Hud", L"LodIgnoreFov", 1); C.knockScale = IniD(L"Hud", L"KnockbackScale", 0.0); C.folCull = IniD(L"Hud", L"FoliageCullScale", 1.0); C.folMin = IniD(L"Hud", L"FoliageMinCullDistance", 40000); C.folFade = IniD(L"Hud", L"FoliageFadeStart", 0.7);
     C.impactFx = IniI(L"Impact", L"Enable", 1); C.frzTime = IniD(L"Impact", L"FreezeSeconds", 0.7); C.noImgTime = IniD(L"Impact", L"NoImageSeconds", 3.0);
     C.grayA = IniD(L"Impact", L"GrayAlpha", 0.2); C.frzBack = IniD(L"Impact", L"LookbackMs", 0); C.frzSpeed = IniD(L"Impact", L"MinSpeed", 0); C.hideImages = IniI(L"Hud", L"HideImages", 1); C.hideText = IniI(L"Hud", L"HideText", 1);
     IniA(L"Hud", L"HudWidgets", L"WBP_FPV_Drone_C", C.hudWidgets, 256);
@@ -417,7 +417,7 @@ static bool ChainHas(u64 cls, const char* name) {
     return false;
 }
 
-struct ObjRec { u64 ptr, cls, outer; u32 name, num; };
+struct ObjRec { u64 ptr, cls, outer; u32 name, num, gidx; };
 static ObjRec* g_objs = 0; static u32 g_objCap = 0, g_objCount = 0;
 static u8* g_itemBuf = 0;
 
@@ -444,12 +444,21 @@ static bool ScanObjects() {
             u8 h[0x28]; if (!RPM(o, h, 0x28)) continue;
             u64 cls = *(u64*)(h + 0x10); if (!IsPtr(cls)) continue;
             if (cnt >= g_objCap) break;
-            g_objs[cnt].ptr = o; g_objs[cnt].cls = cls; g_objs[cnt].outer = *(u64*)(h + 0x20); g_objs[cnt].name = *(u32*)(h + 0x18); g_objs[cnt].num = *(u32*)(h + 0x1C);
+            g_objs[cnt].ptr = o; g_objs[cnt].cls = cls; g_objs[cnt].outer = *(u64*)(h + 0x20); g_objs[cnt].name = *(u32*)(h + 0x18); g_objs[cnt].num = *(u32*)(h + 0x1C); g_objs[cnt].gidx = (u32)(c * 65536 + i);
             cnt++;
         }
     }
     g_objCount = cnt;
     return cnt > 1000;
+}
+static bool ObjLive(u32 gidx, u64 ptr, u64 cls) {
+    u64 table = Rd<u64>(g_base + RVA_OBJECTS); if (!IsPtr(table)) return false;
+    i32 num = Rd<i32>(g_base + RVA_NUMOBJ); if ((i32)gidx >= num) return false;
+    u64 cp = Rd<u64>(table + (u64)(gidx >> 16) * 8); if (!IsPtr(cp)) return false;
+    u8 it[16]; if (!RPM(cp + (u64)(gidx & 0xFFFF) * 24, it, 16)) return false;
+    if (*(u64*)it != ptr) return false;
+    u32 fl = *(u32*)(it + 8); if (fl & (1u << 21)) return false;
+    return Rd<u64>(ptr + 0x10) == cls;
 }
 
 struct NameQ { const char* name; const char* metaSuffix; u64 result; };
@@ -1439,7 +1448,7 @@ static void KeepWrecks() {
         }
         if (!g_vv[h]) continue;
         float v = Rd<float>(r.ptr + g_oDestroyTime);
-        if (v > 0.0f && v < 10000000.0f) { if (WPM(r.ptr + g_oDestroyTime, &big, 4)) patched++; }
+        if (v > 0.0f && v < 10000000.0f && ObjLive(r.gidx, r.ptr, r.cls)) { if (WPM(r.ptr + g_oDestroyTime, &big, 4)) patched++; }
     }
     if (patched) { static char B_[128]; SB sb{ B_, 0, 128 }; sb.s("wrecks: DestroyTime set to forever on "); sb.i(patched); sb.s(" vehicle object(s)"); sb.z(); Log(B_); }
 }
@@ -1492,6 +1501,7 @@ static void Knockback() {
             double want = orig * C.knockScale;
             if (cur == want) continue;
             if (cur != orig) { g_kbP[p].orig = cur; want = cur * C.knockScale; }
+            if (!ObjLive(r.gidx, r.ptr, r.cls)) break;
             if (ki.dbl[k]) WPM(a, &want, 8); else { float fw = (float)want; WPM(a, &fw, 4); }
             changed++;
         }
@@ -1511,11 +1521,17 @@ static void FindLandscape() {
         return;
     }
 }
-struct FolPatch { u64 p; i32 s0, e0; };
-static FolPatch g_fol[2048]; static i32 g_folN = 0; static i32 oFolStart = -1, oFolEnd = -1; static u64 g_folCls[8]; static i32 g_folClsN = 0;
+struct FolPatch { u64 p, cls; u32 gidx; i32 s0, e0; bool seen; };
+static FolPatch g_fol[4096]; static i32 g_folN = 0; static i32 oFolStart = -1, oFolEnd = -1; static u64 g_folCls[8]; static i32 g_folClsN = 0;
+static void FolTarget(const FolPatch& f, bool on, i32& ws, i32& we) {
+    double e = f.e0 * C.folCull; if (e < C.folMin) e = C.folMin;
+    double st = e * C.folFade; if (st < f.s0 * C.folCull) st = f.s0 * C.folCull; if (st > e) st = e;
+    ws = on ? (i32)st : f.s0; we = on ? (i32)e : f.e0;
+}
 static void FoliageCull(bool on) {
     char cn[128];
     i32 added = 0;
+    for (i32 k = 0; k < g_folN; k++) g_fol[k].seen = false;
     for (u32 i = 0; i < g_objCount; i++) {
         ObjRec& r = g_objs[i];
         bool known = false; for (i32 k = 0; k < g_folClsN; k++) if (g_folCls[k] == r.cls) known = true;
@@ -1525,25 +1541,33 @@ static void FoliageCull(bool on) {
             if (oFolStart < 0) { oFolStart = PropOff(r.cls, "InstanceStartCullDistance"); oFolEnd = PropOff(r.cls, "InstanceEndCullDistance"); }
         }
         if (oFolStart < 0 || oFolEnd < 0) return;
-        bool have = false; for (i32 k = 0; k < g_folN; k++) if (g_fol[k].p == r.ptr) { have = true; break; }
-        if (have || g_folN >= 2048) continue;
-        i32 s0 = Rd<i32>(r.ptr + oFolStart), e0 = Rd<i32>(r.ptr + oFolEnd);
-        if (e0 <= 0) continue;
-        g_fol[g_folN].p = r.ptr; g_fol[g_folN].s0 = s0; g_fol[g_folN].e0 = e0; g_folN++; added++;
+        i32 idx = -1; for (i32 k = 0; k < g_folN; k++) if (g_fol[k].p == r.ptr && g_fol[k].gidx == r.gidx && g_fol[k].cls == r.cls) { idx = k; break; }
+        if (idx < 0) {
+            if (g_folN >= 4096) continue;
+            i32 s0 = Rd<i32>(r.ptr + oFolStart), e0 = Rd<i32>(r.ptr + oFolEnd);
+            if (e0 <= 0 || e0 > 10000000 || s0 < 0 || s0 > e0) continue;
+            FolPatch& n = g_fol[g_folN]; n.p = r.ptr; n.cls = r.cls; n.gidx = r.gidx; n.s0 = s0; n.e0 = e0; idx = g_folN++; added++;
+        }
+        g_fol[idx].seen = true;
     }
+    i32 w = 0, live = 0, skipDead = 0, skipVal = 0;
     for (i32 k = 0; k < g_folN; k++) {
-        FolPatch& f = g_fol[k];
-        if (Rd<u64>(f.p + 0x10) == 0) continue;
-        double e = f.e0 * C.folCull; if (e < C.folMin) e = C.folMin;
-        double st = e * C.folFade; if (st < f.s0 * C.folCull) st = f.s0 * C.folCull; if (st > e) st = e;
-        i32 ws = on ? (i32)st : f.s0, we = on ? (i32)e : f.e0;
+        FolPatch f = g_fol[k];
+        if (!f.seen) continue;
+        g_fol[w++] = f;
+        i32 onS, onE, offS, offE; FolTarget(f, true, onS, onE); FolTarget(f, false, offS, offE);
+        i32 ws = on ? onS : offS, we = on ? onE : offE;
+        if (!ObjLive(f.gidx, f.p, f.cls)) { skipDead++; continue; }
         i32 cs = Rd<i32>(f.p + oFolStart), ce = Rd<i32>(f.p + oFolEnd);
+        if (!((cs == onS || cs == offS) && (ce == onE || ce == offE))) { skipVal++; continue; }
+        live++;
         if (cs != ws) WPM(f.p + oFolStart, &ws, 4);
         if (ce != we) WPM(f.p + oFolEnd, &we, 4);
     }
-    if (added) { static char B_[128]; SB sb{ B_, 0, 128 }; sb.s("foliage: cull end >= "); sb.f(C.folMin / 100.0, 0); sb.s(" m, fade from "); sb.f(C.folFade * 100, 0); sb.s("% on "); sb.i(added); sb.s(" component(s)"); sb.z(); Log(B_); }
+    g_folN = w;
+    if (added) { static char B_[128]; SB sb{ B_, 0, 128 }; sb.s("foliage: cull end >= "); sb.f(C.folMin / 100.0, 0); sb.s(" m, fade from "); sb.f(C.folFade * 100, 0); sb.s("% new="); sb.i(added); sb.s(" live="); sb.i(live); sb.s(" skipDead="); sb.i(skipDead); sb.s(" skipVal="); sb.i(skipVal); sb.z(); Log(B_); }
 }
-struct EwVol { u64 p; float orig; bool saved; };
+struct EwVol { u64 p, cls; u32 gidx; float orig; bool saved; };
 static EwVol g_ew[64]; static i32 g_ewN = 0; static bool g_ewBuilt = false; static i32 oPPVWeight = -1;
 static bool g_naniteLogged = false;
 static void LogFoliageNanite() {
@@ -1585,7 +1609,7 @@ static void BuildEwList() {
         bool ew = false;
         for (i32 k = 0; k < n; k++) { u64 o = Rd<u64>(arr + (u64)k * 16 + 8); if (ObjName(o, on, 128) && icontains(on, "NoSignal")) ew = true; }
         if (!ew) continue;
-        g_ew[g_ewN].p = r.ptr; g_ew[g_ewN].saved = false; g_ewN++;
+        g_ew[g_ewN].p = r.ptr; g_ew[g_ewN].cls = r.cls; g_ew[g_ewN].gidx = r.gidx; g_ew[g_ewN].saved = false; g_ewN++;
     }
     if (!g_ewN) return;
     static char B_[96]; SB sb{ B_, 0, 96 }; sb.s("EW: found "); sb.i(g_ewN); sb.s(" jamming volume(s)"); sb.z(); Log(B_);
@@ -1593,7 +1617,7 @@ static void BuildEwList() {
 static void ApplyEw(bool on) {
     for (i32 i = 0; i < g_ewN; i++) {
         EwVol& v = g_ew[i];
-        if (Rd<u64>(v.p + 0x10) == 0) continue;
+        if (!ObjLive(v.gidx, v.p, v.cls)) continue;
         float cur = Rd<float>(v.p + oPPVWeight);
         if (on) { if (cur != 0.0f) { if (!v.saved) { v.orig = cur; v.saved = true; } float z = 0; WPM(v.p + oPPVWeight, &z, 4); } }
         else if (v.saved) { if (cur == 0.0f) WPM(v.p + oPPVWeight, &v.orig, 4); v.saved = false; }
@@ -1620,7 +1644,7 @@ static u32 __stdcall Worker(void*) {
         if (C.noNoise && g_kamikazeActive) KillInterference(g_pawn);
         if (g_ewBuilt) ApplyEw(C.noNoise && g_kamikazeActive && !g_userHidden);
         ApplyScreenPercentage(g_kamikazeActive && C.camHeight > 0 && !g_userHidden, g_winH);
-        { static u64 lastCv = 0; static i32 lastOff = 0; if (now - lastCv > 2000 || lastOff != g_gfxOff) { bool tog = lastOff != g_gfxOff; lastCv = now; lastOff = g_gfxOff; ApplyCVars(); if (tog && g_folN) FoliageCull(!g_gfxOff); } }
+        { static u64 lastCv = 0; static i32 lastOff = 0; if (now - lastCv > 2000 || lastOff != g_gfxOff) { bool tog = lastOff != g_gfxOff; lastCv = now; lastOff = g_gfxOff; ApplyCVars(); if (tog && g_folN && ScanObjects()) FoliageCull(!g_gfxOff); } }
         {
             u64 wld = Rd<u64>(g_base + RVA_GWORLD);
             if (wld != lastWorld) { lastWorld = wld; wreckAt = now + 3000; g_ewBuilt = false; g_ewN = 0; g_naniteLogged = false; g_landOk = 0; g_folN = 0; g_folClsN = 0; g_kbPN = 0; if (g_kbK) memset(g_kbK, 0, (u64)KBC * 8); g_vehBase = 0; g_oDestroyTime = -1; if (g_vk) { memset(g_vk, 0, (u64)VHC * 8); } }
