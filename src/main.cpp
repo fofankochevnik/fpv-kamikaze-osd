@@ -125,10 +125,10 @@ extern "C" i32 _fltused = 0;
 extern "C" void* memset(void* d, i32 c, u64 n) { volatile u8* p = (u8*)d; while (n--) *p++ = (u8)c; return d; }
 extern "C" void* memcpy(void* d, const void* s, u64 n) { volatile u8* p = (u8*)d; const u8* q = (const u8*)s; while (n--) *p++ = *q++; return d; }
 
-static const u64 RVA_GWORLD = 0xa219d88;
-static const u64 RVA_OBJECTS = 0x9db24e0;
-static const u64 RVA_NUMOBJ = 0x9db24f4;
-static const u64 RVA_NAMEPOOL = 0x9fab2c0;
+static const u64 RVA_GWORLD = 0xa1ffd88;
+static const u64 RVA_OBJECTS = 0x9d984e0;
+static const u64 RVA_NUMOBJ = 0x9d984f4;
+static const u64 RVA_NAMEPOOL = 0x9f912c0;
 static const i32 CW = 1024, CH = 582;
 
 static i32 slen(const char* s) { i32 n = 0; while (s[n]) n++; return n; }
@@ -907,7 +907,11 @@ static void FindScalabilityCache() {
         const wc* t2 = L"r.StaticMeshLODDistanceScale"; eq = true; for (i32 q = 0; n[q] || t2[q]; q++) if (n[q] != t2[q]) { eq = false; break; } if (eq) { g_smlod = g_cv[k].value; smOrig = g_cv[k].kind ? g_cv[k].orig : -1; }
     }
     if (g_vds <= 0) return;
-    const u64 dataRva = 0x9DA4000, dataSize = 0x581574;
+    u64 dataRva = 0, dataSize = 0;
+    { i32 pe = Rd<i32>(g_base + 0x3C); u16 ns = Rd<u16>(g_base + pe + 6), osz = Rd<u16>(g_base + pe + 20);
+      for (i32 i = 0; i < ns; i++) { u64 sh = g_base + pe + 24 + osz + (u64)i * 40; char nm[9]; RPM(sh, nm, 8); nm[8] = 0;
+        if (seq(nm, ".data")) { dataSize = Rd<u32>(sh + 8); dataRva = Rd<u32>(sh + 12); break; } } }
+    if (!dataRva || !dataSize || dataSize > 0x4000000) return;
     u8* buf = (u8*)VirtualAlloc(0, dataSize + 16, 0x3000, 4); if (!buf) return;
     for (u64 o = 0; o < dataSize; o += 0x1000) RPM(g_base + dataRva + o, buf + o, (dataSize - o) < 0x1000 ? (dataSize - o) : 0x1000);
     i32 cands = 0; u64 found = 0;
@@ -1667,7 +1671,7 @@ static bool AttachProcess(u32 pid) {
     i32 pe = Rd<i32>(g_base + 0x3C); g_imgSize = Rd<u32>(g_base + pe + 0x50);
     g_pid = pid;
     static char B_[2048]; SB sb{ B_, 0, 2048 }; sb.s("attached pid="); sb.i(pid); sb.s(" base="); sb.h(g_base); sb.s(" size="); sb.h(g_imgSize);
-    if (g_imgSize != 0xAC87000) sb.s("  WARNING: exe differs from the one offsets were taken from");
+    if (g_imgSize != 0xAC6B000) sb.s("  WARNING: exe differs from the one offsets were taken from");
     sb.z(); Log(B_);
     return true;
 }
