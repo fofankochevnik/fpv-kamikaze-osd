@@ -28,3 +28,4 @@ GdipGetGenericFontFamilyMonospace
 GdipDeleteFont
 GdipStringFormatGetGenericTypographic
 GdipCloneStringFormat
+GdipScaleWorldTransform

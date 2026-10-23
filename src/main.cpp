@@ -112,6 +112,7 @@ IMP i32 __stdcall GdipCreateFontFamilyFromName(const wc*, void*, void**);
 IMP i32 __stdcall GdipGetGenericFontFamilySerif(void**);
 IMP i32 __stdcall GdipGetGenericFontFamilyMonospace(void**);
 IMP i32 __stdcall GdipDeleteFont(void*);
+IMP i32 __stdcall GdipScaleWorldTransform(void*, float, float, i32);
 IMP i32 __stdcall GdipStringFormatGetGenericTypographic(void**);
 IMP i32 __stdcall GdipCloneStringFormat(void*, void**);
 IMP i32 __stdcall GdipCreateFont(void*, float, i32, i32, void**);
@@ -201,7 +202,7 @@ static void Log(const char* a, const char* b = 0, const char* c = 0, const char*
 struct Config {
     i32 startTimer, cells;
     double mahStart, packMah, ampsIdleMin, ampsIdleMax, ampsMaxMin, ampsMaxMax;
-    wc font[64]; double fontSize; i32 fontBold; wc warnFont[64]; i32 warnOn; double warnThr;
+    wc font[64]; double fontSize; i32 fontBold; wc warnFont[64]; i32 warnOn; double warnThr, warnY;
     i32 invertPitch, altRelative, useTemplate;
     char kamikazeMatch[256], reconMatch[256];
     i32 fallbackShow;
@@ -301,6 +302,7 @@ static const char* DEFAULT_CFG =
     "[Warn]\r\n"
     "Enable=1\r\n"
     "Throttle=75\r\n"
+    "YOffset=8\r\n"
     "Font=Courier New\r\n"
     "\r\n"
     "[Hotkeys]\r\n"
@@ -328,7 +330,7 @@ static void LoadConfig() {
     IniA(L"Telemetry", L"BatteryProp", L"", C.batteryProp, 64);
     C.keyThrUp = IniI(L"Telemetry", L"ThrottleUpKey", 0); C.keyThrDown = IniI(L"Telemetry", L"ThrottleDownKey", 0);
     C.hideHud = IniI(L"Hud", L"HideGameHud", 1); C.fullCam = IniI(L"Hud", L"FullscreenCamera", 1); C.keepWrecks = IniI(L"Hud", L"KeepWrecks", 1); C.noNoise = IniI(L"Hud", L"NoInterference", 1); C.camHeight = IniI(L"Hud", L"CameraHeight", 720); C.lodIgnoreFov = IniI(L"Hud", L"LodIgnoreFov", 1); C.knockScale = IniD(L"Hud", L"KnockbackScale", 0.0); C.folCull = IniD(L"Hud", L"FoliageCullScale", 1.0); C.folMin = IniD(L"Hud", L"FoliageMinCullDistance", 40000); C.folFade = IniD(L"Hud", L"FoliageFadeStart", 0.7);
-    C.impactFx = IniI(L"Impact", L"Enable", 1); C.frzTime = IniD(L"Impact", L"FreezeSeconds", 1.3); C.noImgTime = IniD(L"Impact", L"NoImageSeconds", 2.0); C.warnOn = IniI(L"Warn", L"Enable", 1); C.warnThr = IniD(L"Warn", L"Throttle", 75); wcpy(C.warnFont, Ini(L"Warn", L"Font", L"Courier New"), 64);
+    C.impactFx = IniI(L"Impact", L"Enable", 1); C.frzTime = IniD(L"Impact", L"FreezeSeconds", 1.3); C.noImgTime = IniD(L"Impact", L"NoImageSeconds", 2.0); C.warnOn = IniI(L"Warn", L"Enable", 1); C.warnThr = IniD(L"Warn", L"Throttle", 75); C.warnY = IniD(L"Warn", L"YOffset", 8); wcpy(C.warnFont, Ini(L"Warn", L"Font", L"Courier New"), 64);
     C.grayA = IniD(L"Impact", L"GrayAlpha", 0.2); C.frzBack = IniD(L"Impact", L"LookbackMs", 0); C.frzSpeed = IniD(L"Impact", L"MinSpeed", 0); C.hideImages = IniI(L"Hud", L"HideImages", 1); C.hideText = IniI(L"Hud", L"HideText", 1);
     IniA(L"Hud", L"HudWidgets", L"WBP_FPV_Drone_C", C.hudWidgets, 256);
     IniA(L"Hud", L"KeepWidgets", L"", C.keepWidgets, 512);
@@ -2048,24 +2050,25 @@ static bool HorizonLine(i32 W, i32 H, double* x0, double* y0, double* ux, double
 }
 static void* g_fontWarn = 0; static float g_warnSize = 0;
 static const wc* WARN_TXT = L"\x0421\x043D\x0438\x0437\x044C \x0441\x043A\x043E\x0440\x043E\x0441\x0442\x044C!";
+static u64 g_warnStart = 0; static volatile i32 g_warnHold = 0; static i32 g_lastPh = -1;
 static void* g_fmtTypo = 0;
-static void DrawWarn() {
+static void DrawWarn(void* G) {
     const float k = 26.0f / 89.0f, ax = CW * 0.5f, ay = CH * 0.5f;
-    const float X0 = ax + (163.0f - 511.5f) * k, X1 = ax + (651.0f - 511.5f) * k, Y0 = ay + (152.0f - 285.5f) * k;
+    const float X0 = ax + (163.0f - 511.5f) * k, X1 = ax + (651.0f - 511.5f) * k, Y0 = ay + (152.0f - 285.5f) * k + (float)C.warnY;
     if (!g_fmtTypo) { void* t = 0; GdipStringFormatGetGenericTypographic(&t); if (t) GdipCloneStringFormat(t, &g_fmtTypo); if (!g_fmtTypo) g_fmtTypo = g_fmtL; }
     if (!g_fontWarn) {
         void* fam = 0; if (GdipCreateFontFamilyFromName(C.warnFont, 0, &fam) != 0) GdipGetGenericFontFamilyMonospace(&fam);
         void* f = 0; GdipCreateFont(fam, 40.0f, 1, 2, &f); if (!f) return;
         RectF lay = { 0, 0, 4000, 400 }, bb = { 0, 0, 0, 0 }; i32 cp = 0, ln = 0;
-        GdipMeasureString(g_gpG, WARN_TXT, wlen(WARN_TXT), f, &lay, g_fmtTypo, &bb, &cp, &ln);
+        GdipMeasureString(G, WARN_TXT, wlen(WARN_TXT), f, &lay, g_fmtTypo, &bb, &cp, &ln);
         float sz = bb.w > 10 ? 40.0f * (X1 - X0) / bb.w : 14.0f;
         GdipDeleteFont(f); GdipCreateFont(fam, sz, 1, 2, &g_fontWarn); g_warnSize = sz;
         if (!g_fontWarn) return;
     }
     i32 n = wlen(WARN_TXT);
     RectF r = { X0, Y0 - g_warnSize * 0.26f, 600.0f, g_warnSize * 1.6f };
-    for (i32 dy = -1; dy <= 1; dy++) for (i32 dx = -1; dx <= 1; dx++) { if (!dx && !dy) continue; RectF o = { r.x + dx, r.y + dy, r.w, r.h }; GdipDrawString(g_gpG, WARN_TXT, n, g_fontWarn, &o, g_fmtTypo, g_brB); }
-    GdipDrawString(g_gpG, WARN_TXT, n, g_fontWarn, &r, g_fmtTypo, g_brW);
+    for (i32 dy = -1; dy <= 1; dy++) for (i32 dx = -1; dx <= 1; dx++) { if (!dx && !dy) continue; RectF o = { r.x + dx, r.y + dy, r.w, r.h }; GdipDrawString(G, WARN_TXT, n, g_fontWarn, &o, g_fmtTypo, g_brB); }
+    GdipDrawString(G, WARN_TXT, n, g_fontWarn, &r, g_fmtTypo, g_brW);
 }
 static void DrawAimAndHorizon(i32 W, i32 H) {
     double x0, y0, ux, uy;
@@ -2154,9 +2157,10 @@ static void ComposeImpact(i32 w, i32 h, bool phase2) {
             dst[x] = 0xFF000000u | (r << 16) | (g << 8) | bl;
         }
     }
-    if (!phase2) return;
+    bool warnOn = g_warnHold && (((GetTickCount64() - g_warnStart) % 1000) < 500);
+    if (!phase2 && !warnOn) return;
     i32 fh = (i32)(h * 0.075); if (fh < 12) fh = 12;
-    if (!g_fontNI || g_fontNIh != fh) {
+    if (phase2 && (!g_fontNI || g_fontNIh != fh)) {
         void* fam = 0; if (GdipCreateFontFamilyFromName(L"Arial", 0, &fam) != 0) GdipGetGenericFontFamilySerif(&fam);
         GdipCreateFont(fam, (float)fh, 0, 2, &g_fontNI); g_fontNIh = fh;
         if (!g_brNI) { GdipCreateSolidFill(0xFFF2F2F2, &g_brNI); GdipCreateSolidFill(0x30000000, &g_brNIsh); GdipCreateStringFormat(0x1000 | 0x4000, 0, &g_fmtC); GdipSetStringFormatAlign(g_fmtC, 1); }
@@ -2165,20 +2169,22 @@ static void ComposeImpact(i32 w, i32 h, bool phase2) {
     if (GdipCreateBitmapFromScan0(w, h, w * 4, 0x000E200B, (u8*)g_dibBits, &bmp) != 0) return;
     if (GdipGetImageGraphicsContext(bmp, &g) != 0) return;
     GdipSetTextRenderingHint(g, 4); GdipSetSmoothingMode(g, 4);
-    const wc* l1 = L"Visible"; const wc* l2 = L"NO IMAGE";
-    float y1 = h * 0.302f, y2 = h * 0.390f;
-    for (i32 dy = -3; dy <= 4; dy++) for (i32 dx = -3; dx <= 4; dx++) {
-        if (dx * dx + dy * dy > 18) continue;
-        RectF a = { (float)dx, y1 + dy, (float)w, (float)fh * 1.5f }, b = { (float)dx, y2 + dy, (float)w, (float)fh * 1.5f };
-        GdipDrawString(g, l1, 7, g_fontNI, &a, g_fmtC, g_brNIsh); GdipDrawString(g, l2, 8, g_fontNI, &b, g_fmtC, g_brNIsh);
+    if (phase2) {
+        const wc* l1 = L"Visible"; const wc* l2 = L"NO IMAGE";
+        float y1 = h * 0.302f, y2 = h * 0.390f;
+        for (i32 dy = -3; dy <= 4; dy++) for (i32 dx = -3; dx <= 4; dx++) {
+            if (dx * dx + dy * dy > 18) continue;
+            RectF a = { (float)dx, y1 + dy, (float)w, (float)fh * 1.5f }, b = { (float)dx, y2 + dy, (float)w, (float)fh * 1.5f };
+            GdipDrawString(g, l1, 7, g_fontNI, &a, g_fmtC, g_brNIsh); GdipDrawString(g, l2, 8, g_fontNI, &b, g_fmtC, g_brNIsh);
+        }
+        RectF a = { 0, y1, (float)w, (float)fh * 1.5f }, b = { 0, y2, (float)w, (float)fh * 1.5f };
+        GdipDrawString(g, l1, 7, g_fontNI, &a, g_fmtC, g_brNI); GdipDrawString(g, l2, 8, g_fontNI, &b, g_fmtC, g_brNI);
     }
-    RectF a = { 0, y1, (float)w, (float)fh * 1.5f }, b = { 0, y2, (float)w, (float)fh * 1.5f };
-    GdipDrawString(g, l1, 7, g_fontNI, &a, g_fmtC, g_brNI); GdipDrawString(g, l2, 8, g_fontNI, &b, g_fmtC, g_brNI);
+    if (warnOn) { GdipScaleWorldTransform(g, (float)w / CW, (float)h / CH, 0); DrawWarn(g); }
     GdipDeleteGraphics(g); GdipDisposeImage(bmp);
 }
 
 static wc g_lastKey[512];
-static u64 g_warnStart = 0; static volatile i32 g_warnHold = 0; static i32 g_lastPh = -1;
 static bool Render(i32 w, i32 h) {
     wc s[12][32];
     i32 mm = T.secs / 60, ss = T.secs % 60;
@@ -2223,7 +2229,7 @@ static bool Render(i32 w, i32 h) {
     Text(s[8], 924, 409, true);
     Text(s[9], 68, 444, false);
     Text(s[10], 447, 531, false);
-    if (warnVis) DrawWarn();
+    if (warnVis && !g_warnHold) DrawWarn(g_gpG);
     DrawAimAndHorizon(w, h);
     EnsureDib(w, h);
     Upscale();
@@ -2377,7 +2383,7 @@ extern "C" void Entry() {
             g_capX = p0.x; g_capY = p0.y; g_capW = rc0.r; g_capH = rc0.b;
             g_capOn = (C.impactFx && g_kamikazeActive && shown && frzState == 0) ? 1 : 0;
             if (trigger && shown && rc0.r >= 100 && rc0.b >= 100) {
-                if (GrabFreezeFrame(trigMs, pickMs ? pickMs : trigMs, rc0.r, rc0.b)) { frzState = 1; frzStart = trigMs; frzSoft = softTrig; frzPawn = pawn; g_warnHold = (C.warnOn && T.gas >= C.warnThr && g_warnStart) ? 1 : 0; g_lastPh = -1; ComposeImpact(rc0.r, rc0.b, false); }
+                if (GrabFreezeFrame(trigMs, pickMs ? pickMs : trigMs, rc0.r, rc0.b)) { frzState = 1; frzStart = trigMs; frzSoft = softTrig; frzPawn = pawn; g_warnHold = (C.warnOn && T.gas >= C.warnThr && g_warnStart) ? 1 : 0; g_lastPh = -1; if (g_warnHold) { g_lastKey[0] = 0; Render(rc0.r, rc0.b); } ComposeImpact(rc0.r, rc0.b, false); }
                 else g_frozen = 0;
                 if (frzState) { HDC scr = GetDC(0); POINT src = { 0, 0 }; SIZE sz = { rc0.r, rc0.b }; BLENDFUNCTION bf = { 0, 0, 255, 1 }; UpdateLayeredWindow(ov, scr, &p0, &sz, g_memDC, &src, 0, &bf, 2); ReleaseDC(0, scr); }
             }
