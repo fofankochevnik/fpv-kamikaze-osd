@@ -2178,6 +2178,7 @@ static void ComposeImpact(i32 w, i32 h, bool phase2) {
 }
 
 static wc g_lastKey[512];
+static u64 g_warnStart = 0; static volatile i32 g_warnHold = 0; static i32 g_lastPh = -1;
 static bool Render(i32 w, i32 h) {
     wc s[12][32];
     i32 mm = T.secs / 60, ss = T.secs % 60;
@@ -2193,8 +2194,9 @@ static bool Render(i32 w, i32 h) {
     FmtW(s[8], (double)(i64)(T.gas + 0.5), 0, false, 0);
     FmtW(s[9], T.txg, 1, false, 0);
     s[10][0] = 'F'; s[10][1] = 'P'; s[10][2] = 'S'; s[10][3] = ':'; s[10][4] = ' '; FmtW(s[10] + 5, (double)g_fpsShown, 0, false, 0);
-    static u64 warnStart = 0; bool warnVis = false;
-    if (C.warnOn && T.gas >= C.warnThr) { u64 tn = GetTickCount64(); if (!warnStart) warnStart = tn; warnVis = ((tn - warnStart) % 1000) < 500; } else warnStart = 0;
+    bool warnVis = false;
+    if (g_warnHold) { warnVis = ((GetTickCount64() - g_warnStart) % 1000) < 500; }
+    else if (C.warnOn && T.gas >= C.warnThr) { u64 tn = GetTickCount64(); if (!g_warnStart) g_warnStart = tn; warnVis = ((tn - g_warnStart) % 1000) < 500; } else g_warnStart = 0;
     s[11][0] = warnVis ? 'W' : '-'; s[11][1] = 0;
     wc key[512]; key[0] = 0;
     for (i32 i = 0; i < 12; i++) { wcat(key, s[i], 512); wcat(key, L"|", 512); }
@@ -2375,23 +2377,27 @@ extern "C" void Entry() {
             g_capX = p0.x; g_capY = p0.y; g_capW = rc0.r; g_capH = rc0.b;
             g_capOn = (C.impactFx && g_kamikazeActive && shown && frzState == 0) ? 1 : 0;
             if (trigger && shown && rc0.r >= 100 && rc0.b >= 100) {
-                if (GrabFreezeFrame(trigMs, pickMs ? pickMs : trigMs, rc0.r, rc0.b)) { frzState = 1; frzStart = trigMs; frzSoft = softTrig; frzPawn = pawn; ComposeImpact(rc0.r, rc0.b, false); }
+                if (GrabFreezeFrame(trigMs, pickMs ? pickMs : trigMs, rc0.r, rc0.b)) { frzState = 1; frzStart = trigMs; frzSoft = softTrig; frzPawn = pawn; g_warnHold = (C.warnOn && T.gas >= C.warnThr && g_warnStart) ? 1 : 0; g_lastPh = -1; ComposeImpact(rc0.r, rc0.b, false); }
                 else g_frozen = 0;
                 if (frzState) { HDC scr = GetDC(0); POINT src = { 0, 0 }; SIZE sz = { rc0.r, rc0.b }; BLENDFUNCTION bf = { 0, 0, 255, 1 }; UpdateLayeredWindow(ov, scr, &p0, &sz, g_memDC, &src, 0, &bf, 2); ReleaseDC(0, scr); }
             }
             if (frzState) {
                 u64 el = NowMs() - frzStart;
+                if (g_warnHold && frzState) {
+                    i32 ph = (i32)(((GetTickCount64() - g_warnStart) % 1000) < 500);
+                    if (ph != g_lastPh) { g_lastPh = ph; Render(g_frzW, g_frzH); ComposeImpact(g_frzW, g_frzH, frzState == 2); HDC scr = GetDC(0); POINT src = { 0, 0 }; SIZE sz = { g_frzW, g_frzH }; BLENDFUNCTION bf = { 0, 0, 255, 1 }; UpdateLayeredWindow(ov, scr, &p0, &sz, g_memDC, &src, 0, &bf, 2); ReleaseDC(0, scr); }
+                }
                 if (frzState == 1 && frzSoft && el >= 300) {
                     frzSoft = false;
                     u64 pn = ReadPawn();
                     bool br = pn && pn == frzPawn && g_pi.brokenOff >= 0 && (Rd<u8>(pn + g_pi.brokenOff) & g_pi.brokenMask);
-                    if (pn && pn == frzPawn && g_pi.kamikaze && !br) { Log("impact: drone survived, freeze cancelled"); frzState = 0; g_frozen = 0; g_lastKey[0] = 0; ShowWindow(ov, 0); shown = false; continue; }
+                    if (pn && pn == frzPawn && g_pi.kamikaze && !br) { Log("impact: drone survived, freeze cancelled"); frzState = 0; g_warnHold = 0; g_frozen = 0; g_lastKey[0] = 0; ShowWindow(ov, 0); shown = false; continue; }
                 }
                 if (frzState == 1 && el >= (u64)(C.frzTime * 1000)) {
                     frzState = 2; ComposeImpact(g_frzW, g_frzH, true);
                     HDC scr = GetDC(0); POINT src = { 0, 0 }; SIZE sz = { g_frzW, g_frzH }; BLENDFUNCTION bf = { 0, 0, 255, 1 }; UpdateLayeredWindow(ov, scr, &p0, &sz, g_memDC, &src, 0, &bf, 2); ReleaseDC(0, scr);
                 }
-                if (el >= (u64)((C.frzTime + C.noImgTime) * 1000) || g_userHidden) { frzState = 0; g_frozen = 0; g_lastKey[0] = 0; ShowWindow(ov, 0); shown = false; }
+                if (el >= (u64)((C.frzTime + C.noImgTime) * 1000) || g_userHidden) { frzState = 0; g_warnHold = 0; g_warnStart = 0; g_frozen = 0; g_lastKey[0] = 0; ShowWindow(ov, 0); shown = false; }
                 else { if (!shown) { ShowWindow(ov, 4); shown = true; } Sleep(15); continue; }
             }
         }
