@@ -1308,6 +1308,30 @@ static u64 FindFuncIn(u64 cls, const char* want) {
     for (i32 i = 0; i < 400 && IsPtr(fx); i++, fx = Rd<u64>(fx + 0x28)) if (ObjName(fx, fn, 128) && seq(fn, want)) return fx;
     return 0;
 }
+
+static bool FindC2W(u64 comp, double* q, double* t) {
+    if (!IsPtr(comp)) return false;
+    double b[0x400 / 8]; if (!RPM(comp, b, 0x400)) return false;
+    for (i32 o = 0x100; o + 96 <= 0x400; o += 16) {
+        double* x = b + o / 8;
+        double n = x[0] * x[0] + x[1] * x[1] + x[2] * x[2] + x[3] * x[3];
+        if (!(n > 0.98 && n < 1.02)) continue;
+        double* sc = x + 8;
+        bool okS = true; for (i32 k = 0; k < 3; k++) if (!(sc[k] > 0.2 && sc[k] < 5)) okS = false;
+        if (!okS) continue;
+        double* tr = x + 4; bool okT = true; for (i32 k = 0; k < 3; k++) if (!(tr[k] > -1e7 && tr[k] < 1e7)) okT = false;
+        if (!okT || (tr[0] == 0 && tr[1] == 0 && tr[2] == 0)) continue;
+        for (i32 k = 0; k < 4; k++) q[k] = x[k]; for (i32 k = 0; k < 3; k++) t[k] = tr[k];
+        return true;
+    }
+    return false;
+}
+static void QRot(const double* q, const double* v, double* o) {
+    double x = q[0], y = q[1], z = q[2], w = q[3];
+    double cx = y * v[2] - z * v[1] + w * v[0], cy = z * v[0] - x * v[2] + w * v[1], cz = x * v[1] - y * v[0] + w * v[2];
+    o[0] = v[0] + 2 * (y * cz - z * cy); o[1] = v[1] + 2 * (z * cx - x * cz); o[2] = v[2] + 2 * (x * cy - y * cx);
+}
+static i32 g_fuzeSign = 1;
 static u64 g_fuzeFn = 0; static i32 g_fuzeTBE = -1; static double g_fuzeLast = 0;
 static void FuzeTick(u64 now) {
     static u64 nextTry = 0;
@@ -1326,7 +1350,7 @@ static void FuzeTick(u64 now) {
         double d = Rd<double>(am + g_fuzeTBE);
         if (d != g_fuzeLast) {
             g_fuzeLast = d;
-            if (d > -1e6 && d < 1e6 && d != 0) { char b[160]; SB sb{ b, 0, 160 }; sb.s("fuze: hit front="); sb.f(d, 1); sb.s("cm need>"); sb.f(C.fuzeR, 1); sb.s(d > C.fuzeR ? " -> BOOM" : " -> ignored"); sb.c(0); Log(b); }
+            if (d > -1e6 && d < 1e6 && d != 0) { char b[160]; SB sb{ b, 0, 160 }; d *= g_fuzeSign; sb.s("fuze: hit front="); sb.f(d, 1); sb.s("cm need>"); sb.f(C.fuzeR, 1); sb.s(d > C.fuzeR ? " -> BOOM" : " -> ignored"); sb.c(0); Log(b); }
         }
         return;
     }
@@ -1353,7 +1377,22 @@ static void FuzeTick(u64 now) {
     if (!sawSpd) { Log("fuze: DetonateSpeed pointer mismatch, patch skipped"); nextTry = now + 600000; return; }
     u64 fnV = ScriptPtrByName(pc, "Dot_VectorVector"), fnG = ScriptPtrByName(pc, "Greater_DoubleDouble"), fnC = ScriptPtrByName(pc, "K2_GetActorLocation"), fnS = ScriptPtrByName(pc, "Subtract_VectorVector"), fnF = ScriptPtrByName(pc, "GetForwardVector");
     if (!fnG) fnG = ScriptPtrByName(ac, "Greater_DoubleDouble"); if (!fnC) fnC = ScriptPtrByName(ac, "K2_GetActorLocation");
-    if (!fnV || !fnG || !fnC || !fnS || !fnF) { Log("fuze: math functions not found"); nextTry = now + 600000; return; }
+    u64 fnL = ScriptPtrByName(pc, "LessEqual_DoubleDouble");
+    if (!fnV || !fnG || !fnC || !fnS || !fnL) { Log("fuze: math functions not found"); nextTry = now + 600000; return; }
+    u64 detC = Rd<u64>(am + FieldOff(fDet)), root = Rd<u64>(pawn + oRoot);
+    double qd[4], td[3], qr[4], tr[3];
+    if (!FindC2W(detC, qd, td) || !FindC2W(root, qr, tr)) { Log("fuze: transforms not found, retry"); return; }
+    { double dx = td[0] - tr[0], dy = td[1] - tr[1], dz = td[2] - tr[2]; if (dx * dx + dy * dy + dz * dz > 200.0 * 200.0) { Log("fuze: transforms look wrong, retry"); return; } }
+    double X[3] = { 1, 0, 0 }, fw[3]; QRot(qr, X, fw);
+    const char* axN[3] = { "GetForwardVector", "GetRightVector", "GetUpVector" };
+    i32 bestK = 0; double bestD = 0;
+    for (i32 k = 0; k < 3; k++) { double e[3] = { 0, 0, 0 }; e[k] = 1; double a[3]; QRot(qd, e, a); double dt = a[0] * fw[0] + a[1] * fw[1] + a[2] * fw[2]; if ((dt < 0 ? -dt : dt) > (bestD < 0 ? -bestD : bestD)) { bestD = dt; bestK = k; } }
+    if ((bestD < 0 ? -bestD : bestD) < 0.7) { Log("fuze: no axis matches drone forward, retry"); return; }
+    u64 scc = ObjClass(detC); while (IsPtr(scc) && ObjName(scc, cn, 128) && !seq(cn, "SceneComponent")) scc = Super(scc);
+    fnF = IsPtr(scc) ? FindFuncIn(scc, axN[bestK]) : 0;
+    if (!fnF) { Log("fuze: axis function not found"); nextTry = now + 600000; return; }
+    g_fuzeSign = bestD > 0 ? 1 : -1;
+    { char lb[160]; SB sb{ lb, 0, 160 }; sb.s("fuze: drone forward = detonator "); sb.s(axN[bestK]); sb.s(g_fuzeSign > 0 ? " (+)" : " (-)"); sb.s(" dot="); sb.f(bestD, 2); sb.c(0); Log(lb); }
     u8 out[249]; i32 n2 = 0; u8 det[14]; for (i32 k = 0; k < 14; k++) det[k] = buf[764 + k];
     #define PB(v) out[n2++] = (u8)(v)
     #define P8(v) { u64 q_ = (u64)(v); for (i32 k_ = 0; k_ < 8; k_++) PB(q_ >> (8 * k_)); }
@@ -1363,7 +1402,8 @@ static void FuzeTick(u64 now) {
     PB(0x19); PB(0x01); P8(fDet); P4(10); P8(0); PB(0x1C); P8(fnF); PB(0x16);
     PB(0x16);
     PB(0x07); P4(778);
-    PB(0x68); P8(fnG); PB(0x01); P8(fTbe); PB(0x37); { double r = C.fuzeR; u64 q = *(u64*)&r; P8(q); } PB(0x16);
+    if (g_fuzeSign > 0) { PB(0x68); P8(fnG); PB(0x01); P8(fTbe); PB(0x37); { double r = C.fuzeR; u64 q = *(u64*)&r; P8(q); } PB(0x16); }
+    else { PB(0x68); P8(fnL); PB(0x01); P8(fTbe); PB(0x37); { double r = -C.fuzeR; u64 q = *(u64*)&r; P8(q); } PB(0x16); }
     for (i32 k = 0; k < 14; k++) PB(det[k]);
     while (n2 < 249) PB(0x0B);
     #undef PB
