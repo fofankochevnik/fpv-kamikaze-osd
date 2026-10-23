@@ -112,6 +112,8 @@ IMP i32 __stdcall GdipCreateFontFamilyFromName(const wc*, void*, void**);
 IMP i32 __stdcall GdipGetGenericFontFamilySerif(void**);
 IMP i32 __stdcall GdipGetGenericFontFamilyMonospace(void**);
 IMP i32 __stdcall GdipDeleteFont(void*);
+IMP i32 __stdcall GdipStringFormatGetGenericTypographic(void**);
+IMP i32 __stdcall GdipCloneStringFormat(void*, void**);
 IMP i32 __stdcall GdipCreateFont(void*, float, i32, i32, void**);
 IMP i32 __stdcall GdipMeasureString(void*, const wc*, i32, void*, const RectF*, void*, RectF*, i32*, i32*);
 IMP i32 __stdcall GdipCreateSolidFill(u32, void**);
@@ -2046,21 +2048,24 @@ static bool HorizonLine(i32 W, i32 H, double* x0, double* y0, double* ux, double
 }
 static void* g_fontWarn = 0; static float g_warnSize = 0;
 static const wc* WARN_TXT = L"\x0421\x043D\x0438\x0437\x044C \x0441\x043A\x043E\x0440\x043E\x0441\x0442\x044C!";
+static void* g_fmtTypo = 0;
 static void DrawWarn() {
-    const float X0 = 163.0f, X1 = 651.0f, Y0 = 152.0f * CH / 572.0f;
+    const float k = 26.0f / 89.0f, ax = CW * 0.5f, ay = CH * 0.5f;
+    const float X0 = ax + (163.0f - 511.5f) * k, X1 = ax + (651.0f - 511.5f) * k, Y0 = ay + (152.0f - 285.5f) * k;
+    if (!g_fmtTypo) { void* t = 0; GdipStringFormatGetGenericTypographic(&t); if (t) GdipCloneStringFormat(t, &g_fmtTypo); if (!g_fmtTypo) g_fmtTypo = g_fmtL; }
     if (!g_fontWarn) {
         void* fam = 0; if (GdipCreateFontFamilyFromName(C.warnFont, 0, &fam) != 0) GdipGetGenericFontFamilyMonospace(&fam);
         void* f = 0; GdipCreateFont(fam, 40.0f, 1, 2, &f); if (!f) return;
         RectF lay = { 0, 0, 4000, 400 }, bb = { 0, 0, 0, 0 }; i32 cp = 0, ln = 0;
-        GdipMeasureString(g_gpG, WARN_TXT, wlen(WARN_TXT), f, &lay, g_fmtL, &bb, &cp, &ln);
-        float sz = bb.w > 10 ? 40.0f * (X1 - X0) / bb.w : 40.0f;
+        GdipMeasureString(g_gpG, WARN_TXT, wlen(WARN_TXT), f, &lay, g_fmtTypo, &bb, &cp, &ln);
+        float sz = bb.w > 10 ? 40.0f * (X1 - X0) / bb.w : 14.0f;
         GdipDeleteFont(f); GdipCreateFont(fam, sz, 1, 2, &g_fontWarn); g_warnSize = sz;
         if (!g_fontWarn) return;
     }
     i32 n = wlen(WARN_TXT);
-    RectF r = { X0 - g_warnSize * 0.12f, Y0 - g_warnSize * 0.18f, 900.0f, g_warnSize * 1.6f };
-    for (i32 dy = -2; dy <= 3; dy++) for (i32 dx = -2; dx <= 3; dx++) { if (!dx && !dy) continue; if (dx * dx + dy * dy > 10) continue; RectF o = { r.x + dx, r.y + dy, r.w, r.h }; GdipDrawString(g_gpG, WARN_TXT, n, g_fontWarn, &o, g_fmtL, g_brB); }
-    GdipDrawString(g_gpG, WARN_TXT, n, g_fontWarn, &r, g_fmtL, g_brW);
+    RectF r = { X0, Y0 - g_warnSize * 0.26f, 600.0f, g_warnSize * 1.6f };
+    for (i32 dy = -1; dy <= 1; dy++) for (i32 dx = -1; dx <= 1; dx++) { if (!dx && !dy) continue; RectF o = { r.x + dx, r.y + dy, r.w, r.h }; GdipDrawString(g_gpG, WARN_TXT, n, g_fontWarn, &o, g_fmtTypo, g_brB); }
+    GdipDrawString(g_gpG, WARN_TXT, n, g_fontWarn, &r, g_fmtTypo, g_brW);
 }
 static void DrawAimAndHorizon(i32 W, i32 H) {
     double x0, y0, ux, uy;

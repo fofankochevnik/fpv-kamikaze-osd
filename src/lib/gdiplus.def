@@ -26,3 +26,5 @@ GdipDisposeImage
 GdipMeasureString
 GdipGetGenericFontFamilyMonospace
 GdipDeleteFont
+GdipStringFormatGetGenericTypographic
+GdipCloneStringFormat
