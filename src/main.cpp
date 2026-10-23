@@ -1274,6 +1274,54 @@ static void DumpFuncs(SB& sb, u64 cls) {
         }
     }
 }
+static void DumpBytecodeFor(SB& sb, u64 cls) {
+    char fn[128], cn[128], rn[128];
+    for (u64 c = cls; IsPtr(c); c = Super(c)) {
+        if (!ObjName(c, cn, 128) || !sends(cn, "_C")) break;
+        u64 fx = Rd<u64>(c + L.child - 8);
+        for (i32 i = 0; i < 400 && IsPtr(fx); i++, fx = Rd<u64>(fx + 0x28)) {
+            if (!ObjName(fx, fn, 128)) continue;
+            u64 sp = Rd<u64>(fx + 0x60); i32 sn = Rd<i32>(fx + 0x68);
+            if (!IsPtr(sp) || sn < 8 || sn > 20000) continue;
+            u8* buf = (u8*)VirtualAlloc(0, (u64)sn + 16, 0x3000, 4); if (!buf) continue;
+            if (!RPM(sp, buf, sn)) { for (i32 o = 0; o < sn; o += 0x1000) RPM(sp + o, buf + o, sn - o < 0x1000 ? sn - o : 0x1000); }
+            sb.s("FN "); sb.s(cn); sb.c('.'); sb.s(fn); sb.s(" size="); sb.i(sn); sb.s("\r\nHEX ");
+            for (i32 o = 0; o < sn; o++) { static const char* hx = "0123456789abcdef"; sb.c(hx[buf[o] >> 4]); sb.c(hx[buf[o] & 15]); }
+            sb.s("\r\n");
+            for (i32 o = 0; o + 8 <= sn; o++) {
+                if (buf[o + 6] || buf[o + 7]) continue;
+                u64 v = *(u64*)(buf + o); if (v < 0x10000 || (v & 7)) continue;
+                char nm[128]; if (!ObjName(v, nm, 128) || !PrintableName(nm)) continue;
+                sb.s("PTR "); sb.i(o); sb.c(' '); sb.s(nm);
+                u64 oc = Rd<u64>(v + 0x10); if (IsPtr(oc) && ObjName(oc, rn, 128) && PrintableName(rn)) { sb.c('<'); sb.s(rn); sb.c('>'); }
+                sb.s("\r\n"); o += 7;
+            }
+            for (i32 o = 0; o + 12 <= sn; o++) {
+                u32 a = *(u32*)(buf + o), b = *(u32*)(buf + o + 4);
+                if (a != b || a == 0 || a > 0x3000000) continue;
+                char nm[128]; if (!NameIdx(a, *(u32*)(buf + o + 8), nm, 128) || !PrintableName(nm)) continue;
+                sb.s("NAME "); sb.i(o); sb.c(' '); sb.s(nm); sb.s("\r\n");
+            }
+            VirtualFree(buf, 0, 0x8000);
+            if (sb.n > DUMPCAP - 65536) return;
+        }
+    }
+}
+static void DumpBytecode() {
+    if (!g_dump) g_dump = (char*)VirtualAlloc(0, DUMPCAP, 0x3000, 4);
+    if (!g_dump || !IsPtr(g_pawn)) return;
+    SB sb{ g_dump, 0, DUMPCAP };
+    u64 pawn = g_pawn;
+    sb.s("#### BYTECODE drone\r\n"); DumpBytecodeFor(sb, ObjClass(pawn));
+    i32 oAm = PropOff(ObjClass(pawn), "Ammos");
+    if (oAm >= 0) {
+        u64 arr = Rd<u64>(pawn + oAm); i32 n = Rd<i32>(pawn + oAm + 8);
+        if (n > 0 && IsPtr(arr)) { u64 am = Rd<u64>(arr); if (IsPtr(am)) { sb.s("#### BYTECODE ammo\r\n"); DumpBytecodeFor(sb, ObjClass(am)); } }
+    }
+    wc p[600]; wcpy(p, g_dir, 600); wcat(p, L"osd_bytecode.txt", 600);
+    AppendFile(p, sb.p, sb.n);
+    Log("bytecode dump written");
+}
 static void DumpAmmoInfo(const char* reason) {
     if (!g_dump) g_dump = (char*)VirtualAlloc(0, DUMPCAP, 0x3000, 4);
     if (!g_dump || !IsPtr(g_pawn)) return;
@@ -1829,7 +1877,7 @@ static u32 __stdcall Worker(void*) {
         }
         if (g_pawnSerial != lastSerial) { lastSerial = g_pawnSerial; if (g_pawn) dumpAt = now + 2500; }
         if (dumpAt && now >= dumpAt) { dumpAt = 0; DoDump("pawn changed"); }
-        if (g_dumpReq) { g_dumpReq = 0; if (g_kamikazeActive) DumpAmmoInfo("hotkey"); DoDump("hotkey"); }
+        if (g_dumpReq) { g_dumpReq = 0; if (g_kamikazeActive) { DumpAmmoInfo("hotkey"); DumpBytecode(); } DoDump("hotkey"); }
         if (C.noNoise && g_kamikazeActive) KillInterference(g_pawn);
         if (g_ewBuilt) ApplyEw(C.noNoise && g_kamikazeActive && !g_userHidden);
         ApplyScreenPercentage(g_kamikazeActive && C.camHeight > 0 && !g_userHidden, g_winH);
