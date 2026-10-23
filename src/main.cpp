@@ -208,7 +208,7 @@ static void Log(const char* a, const char* b = 0, const char* c = 0, const char*
 struct Config {
     i32 startTimer, cells;
     double mahStart, packMah, ampsIdleMin, ampsIdleMax, ampsMaxMin, ampsMaxMax;
-    wc font[64]; double fontSize; i32 fontBold; wc warnFont[64]; i32 warnOn; double warnThr, warnY; i32 fuzeOn; double fuzeR; i32 fuzeNoDmg;
+    wc font[64]; double fontSize; i32 fontBold; wc warnFont[64]; i32 warnOn; double warnThr, warnY; i32 fuzeOn; double fuzeR; i32 fuzeNoDmg; i32 fuzeFlip;
     i32 invertPitch, altRelative, useTemplate;
     char kamikazeMatch[256], reconMatch[256];
     i32 fallbackShow;
@@ -315,6 +315,7 @@ static const char* DEFAULT_CFG =
     "Enable=1\r\n"
     "Front=9\r\n"
     "NoCrashDamage=1\r\n"
+    "Flip=1\r\n"
     "\r\n"
     "[Hotkeys]\r\n"
     "Toggle=0x75\r\n"
@@ -342,7 +343,7 @@ static void LoadConfig() {
     C.keyThrUp = IniI(L"Telemetry", L"ThrottleUpKey", 0); C.keyThrDown = IniI(L"Telemetry", L"ThrottleDownKey", 0);
     C.hideHud = IniI(L"Hud", L"HideGameHud", 1); C.fullCam = IniI(L"Hud", L"FullscreenCamera", 1); C.keepWrecks = IniI(L"Hud", L"KeepWrecks", 1); C.noNoise = IniI(L"Hud", L"NoInterference", 1); C.camHeight = IniI(L"Hud", L"CameraHeight", 720); C.lodIgnoreFov = IniI(L"Hud", L"LodIgnoreFov", 1); C.knockScale = IniD(L"Hud", L"KnockbackScale", 0.0); C.folCull = IniD(L"Hud", L"FoliageCullScale", 1.0); C.folMin = IniD(L"Hud", L"FoliageMinCullDistance", 40000); C.folFade = IniD(L"Hud", L"FoliageFadeStart", 0.7);
     C.impactFx = IniI(L"Impact", L"Enable", 1); C.frzTime = IniD(L"Impact", L"FreezeSeconds", 1.3); C.noImgTime = IniD(L"Impact", L"NoImageSeconds", 2.0); C.warnOn = IniI(L"Warn", L"Enable", 1); C.warnThr = IniD(L"Warn", L"Throttle", 75); C.warnY = IniD(L"Warn", L"YOffset", 8); wcpy(C.warnFont, Ini(L"Warn", L"Font", L"Courier New"), 64);
-    C.fuzeOn = IniI(L"Fuze", L"Enable", 1); C.fuzeR = IniD(L"Fuze", L"Front", 9); C.fuzeNoDmg = IniI(L"Fuze", L"NoCrashDamage", 1); C.grayA = IniD(L"Impact", L"GrayAlpha", 0.2); C.frzBack = IniD(L"Impact", L"LookbackMs", 0); C.frzSpeed = IniD(L"Impact", L"MinSpeed", 0); C.hideImages = IniI(L"Hud", L"HideImages", 1); C.hideText = IniI(L"Hud", L"HideText", 1);
+    C.fuzeOn = IniI(L"Fuze", L"Enable", 1); C.fuzeR = IniD(L"Fuze", L"Front", 9); C.fuzeNoDmg = IniI(L"Fuze", L"NoCrashDamage", 1); C.fuzeFlip = IniI(L"Fuze", L"Flip", 1); C.grayA = IniD(L"Impact", L"GrayAlpha", 0.2); C.frzBack = IniD(L"Impact", L"LookbackMs", 0); C.frzSpeed = IniD(L"Impact", L"MinSpeed", 0); C.hideImages = IniI(L"Hud", L"HideImages", 1); C.hideText = IniI(L"Hud", L"HideText", 1);
     IniA(L"Hud", L"HudWidgets", L"WBP_FPV_Drone_C", C.hudWidgets, 256);
     IniA(L"Hud", L"KeepWidgets", L"", C.keepWidgets, 512);
     C.keyToggle = IniI(L"Hotkeys", L"Toggle", 0x75); C.keyReset = IniI(L"Hotkeys", L"ResetTimer", 0x76); C.keyDump = IniI(L"Hotkeys", L"Dump", 0x78);
@@ -1425,7 +1426,7 @@ static void FuzeTick(u64 now) {
     u64 scc = ObjClass(detC); while (IsPtr(scc) && ObjName(scc, cn, 128) && !seq(cn, "SceneComponent")) scc = Super(scc);
     fnF = IsPtr(scc) ? FindFuncIn(scc, axN[bestK]) : 0;
     if (!fnF) { Log("fuze: axis function not found"); nextTry = now + 600000; return; }
-    g_fuzeSign = bestD > 0 ? 1 : -1;
+    g_fuzeSign = bestD > 0 ? 1 : -1; if (C.fuzeFlip) g_fuzeSign = -g_fuzeSign;
     { char lb[160]; SB sb{ lb, 0, 160 }; sb.s("fuze: drone forward = detonator "); sb.s(axN[bestK]); sb.s(g_fuzeSign > 0 ? " (+)" : " (-)"); sb.s(" dot="); sb.f(bestD, 2); sb.c(0); Log(lb); }
     u8 out[249]; i32 n2 = 0; u8 det[14]; for (i32 k = 0; k < 14; k++) det[k] = buf[764 + k];
     #define PB(v) out[n2++] = (u8)(v)
