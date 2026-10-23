@@ -308,7 +308,7 @@ static const char* DEFAULT_CFG =
     "\r\n"
     "[Fuze]\r\n"
     "Enable=1\r\n"
-    "Front=15\r\n"
+    "Front=9\r\n"
     "NoCrashDamage=1\r\n"
     "\r\n"
     "[Hotkeys]\r\n"
@@ -337,7 +337,7 @@ static void LoadConfig() {
     C.keyThrUp = IniI(L"Telemetry", L"ThrottleUpKey", 0); C.keyThrDown = IniI(L"Telemetry", L"ThrottleDownKey", 0);
     C.hideHud = IniI(L"Hud", L"HideGameHud", 1); C.fullCam = IniI(L"Hud", L"FullscreenCamera", 1); C.keepWrecks = IniI(L"Hud", L"KeepWrecks", 1); C.noNoise = IniI(L"Hud", L"NoInterference", 1); C.camHeight = IniI(L"Hud", L"CameraHeight", 720); C.lodIgnoreFov = IniI(L"Hud", L"LodIgnoreFov", 1); C.knockScale = IniD(L"Hud", L"KnockbackScale", 0.0); C.folCull = IniD(L"Hud", L"FoliageCullScale", 1.0); C.folMin = IniD(L"Hud", L"FoliageMinCullDistance", 40000); C.folFade = IniD(L"Hud", L"FoliageFadeStart", 0.7);
     C.impactFx = IniI(L"Impact", L"Enable", 1); C.frzTime = IniD(L"Impact", L"FreezeSeconds", 1.3); C.noImgTime = IniD(L"Impact", L"NoImageSeconds", 2.0); C.warnOn = IniI(L"Warn", L"Enable", 1); C.warnThr = IniD(L"Warn", L"Throttle", 75); C.warnY = IniD(L"Warn", L"YOffset", 8); wcpy(C.warnFont, Ini(L"Warn", L"Font", L"Courier New"), 64);
-    C.fuzeOn = IniI(L"Fuze", L"Enable", 1); C.fuzeR = IniD(L"Fuze", L"Front", 15); C.fuzeNoDmg = IniI(L"Fuze", L"NoCrashDamage", 1); C.grayA = IniD(L"Impact", L"GrayAlpha", 0.2); C.frzBack = IniD(L"Impact", L"LookbackMs", 0); C.frzSpeed = IniD(L"Impact", L"MinSpeed", 0); C.hideImages = IniI(L"Hud", L"HideImages", 1); C.hideText = IniI(L"Hud", L"HideText", 1);
+    C.fuzeOn = IniI(L"Fuze", L"Enable", 1); C.fuzeR = IniD(L"Fuze", L"Front", 9); C.fuzeNoDmg = IniI(L"Fuze", L"NoCrashDamage", 1); C.grayA = IniD(L"Impact", L"GrayAlpha", 0.2); C.frzBack = IniD(L"Impact", L"LookbackMs", 0); C.frzSpeed = IniD(L"Impact", L"MinSpeed", 0); C.hideImages = IniI(L"Hud", L"HideImages", 1); C.hideText = IniI(L"Hud", L"HideText", 1);
     IniA(L"Hud", L"HudWidgets", L"WBP_FPV_Drone_C", C.hudWidgets, 256);
     IniA(L"Hud", L"KeepWidgets", L"", C.keepWidgets, 512);
     C.keyToggle = IniI(L"Hotkeys", L"Toggle", 0x75); C.keyReset = IniI(L"Hotkeys", L"ResetTimer", 0x76); C.keyDump = IniI(L"Hotkeys", L"Dump", 0x78);
