@@ -38,6 +38,7 @@ IMP i32 __stdcall WriteProcessMemory(HANDLE, void*, const void*, u64, u64*);
 IMP i32 __stdcall GetExitCodeProcess(HANDLE, u32*);
 IMP i32 __stdcall K32EnumProcessModules(HANDLE, void**, u32, u32*);
 IMP void __stdcall Sleep(u32);
+IMP i32 __stdcall PrintWindow(HWND, HDC, u32);
 IMP HANDLE __stdcall CreateEventW(void*, i32, i32, const wc*);
 IMP i32 __stdcall SetEvent(HANDLE);
 IMP u32 __stdcall WaitForSingleObject(HANDLE, u32);
@@ -2051,6 +2052,7 @@ static bool HorizonLine(i32 W, i32 H, double* x0, double* y0, double* ux, double
 static void* g_fontWarn = 0; static float g_warnSize = 0;
 static const wc* WARN_TXT = L"\x0421\x043D\x0438\x0437\x044C \x0441\x043A\x043E\x0440\x043E\x0441\x0442\x044C!";
 static u64 g_warnStart = 0; static volatile i32 g_warnHold = 0; static i32 g_lastPh = -1;
+static volatile i32 g_pwMode = 0;
 static void* g_fmtTypo = 0;
 static void DrawWarn(void* G) {
     const float k = 26.0f / 89.0f, ax = CW * 0.5f, ay = CH * 0.5f;
@@ -2089,7 +2091,7 @@ static void BuildWarnMask() {
 }
 static u8 g_wHole[300000];
 static void CleanFrozenWarn(u32* fr, i32 w, i32 h) {
-    if (!C.warnOn || !g_fontWarn) return;
+    if (!C.warnOn || !g_fontWarn || g_pwMode == 1) return;
     BuildWarnMask(); if (!g_wMaskOk) return;
     EnsureDib(w, h);
     i32 sy0 = g_wy0 * h / CH - 1, sy1 = (g_wy1 + 1) * h / CH + 1; if (sy0 < 0) sy0 = 0; if (sy1 >= h) sy1 = h - 1;
@@ -2159,7 +2161,7 @@ static void DrawAimAndHorizon(i32 W, i32 H) {
 
 struct CapFrame { HDC dc; HANDLE bmp; u32* bits; i32 w, h; u64 t; bool ok; };
 static CapFrame g_ring[8]; static volatile i32 g_ringIdx = 0;
-static volatile i32 g_capOn = 0, g_capBusy = 0, g_frozen = 0, g_capSlot = -1;
+static volatile i32 g_capOn = 0, g_capBusy = 0, g_frozen = 0, g_capSlot = -1; static volatile HWND g_capWnd = 0;
 static volatile i32 g_capX = 0, g_capY = 0, g_capW = 0, g_capH = 0;
 static volatile u64 g_manualKeyMs = 0;
 static u64 NowMs() { i64 c, f; QueryPerformanceCounter(&c); QueryPerformanceFrequency(&f); return (u64)(c / (f / 1000)); }
@@ -2183,7 +2185,18 @@ static u32 __stdcall CaptureThread(void*) {
         EnsureCap(f, g_capW, g_capH);
         u64 t0 = NowMs();
         HDC scr = GetDC(0);
-        if (f.ok && BitBlt(f.dc, 0, 0, f.w, f.h, scr, g_capX, g_capY, 0x00CC0020)) { f.t = t0; g_ringIdx = i; }
+        bool got = false;
+        if (g_pwMode >= 0 && g_capWnd && f.ok) {
+            if (PrintWindow(g_capWnd, f.dc, 0x3)) {
+                i32 dark = 0, tot = 0;
+                for (i32 sy = 1; sy < 8; sy++) for (i32 sx = 1; sx < 8; sx++) { u32 px = f.bits[(u64)(f.h * sy / 8) * f.w + f.w * sx / 8]; tot++; if ((px & 0xFFFFFF) == 0) dark++; }
+                static i32 pwBad = 0, pwGood = 0;
+                if (dark >= tot - 1) { if (++pwBad >= 12 && !pwGood) { g_pwMode = -1; Log("capture: PrintWindow gives black, using screen BitBlt"); } }
+                else { pwBad = 0; if (!pwGood) { Log("capture: using PrintWindow (game only, no overlay)"); g_pwMode = 1; } if (pwGood < 1000000) pwGood++; got = true; }
+            } else { static i32 pwFail = 0; if (++pwFail >= 12) { g_pwMode = -1; Log("capture: PrintWindow failed, using screen BitBlt"); } }
+        }
+        if (got) { f.t = t0; g_ringIdx = i; }
+        else if (f.ok && BitBlt(f.dc, 0, 0, f.w, f.h, scr, g_capX, g_capY, 0x00CC0020)) { f.t = t0; g_ringIdx = i; }
         ReleaseDC(0, scr);
         g_capSlot = -1; g_capBusy = 0;
         u64 t1 = NowMs(); sum += t1 - t0; cnt++;
@@ -2453,7 +2466,7 @@ extern "C" void Entry() {
 
         {
             RECT rc0; GetClientRect(game, &rc0); POINT p0 = { 0, 0 }; ClientToScreen(game, &p0);
-            g_capX = p0.x; g_capY = p0.y; g_capW = rc0.r; g_capH = rc0.b;
+            g_capX = p0.x; g_capY = p0.y; g_capW = rc0.r; g_capH = rc0.b; g_capWnd = game;
             g_capOn = (C.impactFx && g_kamikazeActive && shown && frzState == 0) ? 1 : 0;
             if (trigger && shown && rc0.r >= 100 && rc0.b >= 100) {
                 if (GrabFreezeFrame(trigMs, pickMs ? pickMs : trigMs, rc0.r, rc0.b)) { frzState = 1; frzStart = trigMs; frzSoft = softTrig; frzPawn = pawn; g_warnHold = (C.warnOn && T.gas >= C.warnThr && g_warnStart) ? 1 : 0; g_lastPh = -1; if (g_warnHold) { g_lastKey[0] = 0; Render(rc0.r, rc0.b); } ComposeImpact(rc0.r, rc0.b, false); }
