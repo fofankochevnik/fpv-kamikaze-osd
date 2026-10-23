@@ -2070,6 +2070,77 @@ static void DrawWarn(void* G) {
     for (i32 dy = -1; dy <= 1; dy++) for (i32 dx = -1; dx <= 1; dx++) { if (!dx && !dy) continue; RectF o = { r.x + dx, r.y + dy, r.w, r.h }; GdipDrawString(G, WARN_TXT, n, g_fontWarn, &o, g_fmtTypo, g_brB); }
     GdipDrawString(G, WARN_TXT, n, g_fontWarn, &r, g_fmtTypo, g_brW);
 }
+static u32* g_wMask = 0; static i32 g_wx0 = 0, g_wy0 = 0, g_wx1 = 0, g_wy1 = 0; static bool g_wMaskOk = false;
+static void BuildWarnMask() {
+    if (g_wMaskOk) return;
+    if (!g_wMask) g_wMask = (u32*)VirtualAlloc(0, (u64)CW * CH * 4, 0x3000, 4);
+    if (!g_wMask) return;
+    memset(g_wMask, 0, (u64)CW * CH * 4);
+    void* bmp = 0; void* g = 0;
+    if (GdipCreateBitmapFromScan0(CW, CH, CW * 4, 0x000E200B, (u8*)g_wMask, &bmp) != 0) return;
+    if (GdipGetImageGraphicsContext(bmp, &g) != 0) { GdipDisposeImage(bmp); return; }
+    GdipSetTextRenderingHint(g, 4); GdipSetSmoothingMode(g, 4);
+    DrawWarn(g);
+    GdipDeleteGraphics(g); GdipDisposeImage(bmp);
+    i32 x0 = CW, y0 = CH, x1 = -1, y1 = -1;
+    for (i32 y = 0; y < CH; y++) for (i32 x = 0; x < CW; x++) if (g_wMask[y * CW + x] >> 24) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    if (x1 < 0) return;
+    g_wx0 = x0; g_wx1 = x1; g_wy0 = y0; g_wy1 = y1; g_wMaskOk = true;
+}
+static u8 g_wHole[300000];
+static void CleanFrozenWarn(u32* fr, i32 w, i32 h) {
+    if (!C.warnOn || !g_fontWarn) return;
+    BuildWarnMask(); if (!g_wMaskOk) return;
+    EnsureDib(w, h);
+    i32 sy0 = g_wy0 * h / CH - 1, sy1 = (g_wy1 + 1) * h / CH + 1; if (sy0 < 0) sy0 = 0; if (sy1 >= h) sy1 = h - 1;
+    i32 sx0 = -1, sx1 = -1;
+    for (i32 x = 0; x < w && x < 8192; x++) { i32 cx = g_xmap[x]; if (cx >= g_wx0 && cx <= g_wx1) { if (sx0 < 0) sx0 = x; sx1 = x; } }
+    if (sx0 < 0) return;
+    i32 rw = sx1 - sx0 + 1, rh = sy1 - sy0 + 1; if (rw * rh > 300000) return;
+    i32 wT = 0, wOk = 0, bT = 0, bOk = 0;
+    for (i32 y = sy0; y <= sy1; y++) {
+        const u32* mrow = g_wMask + (u64)((i64)y * CH / h) * CW; const u32* frow = fr + (u64)y * w;
+        for (i32 x = sx0; x <= sx1; x++) {
+            u32 m = mrow[g_xmap[x]]; if ((m >> 24) != 255) continue; u32 px = frow[x];
+            u32 pr = px >> 16 & 255, pg = px >> 8 & 255, pb = px & 255;
+            if ((m & 0xFFFFFF) == 0xFFFFFF) { wT++; if (pr >= 232 && pg >= 232 && pb >= 232) wOk++; }
+            else if ((m & 0xFFFFFF) == 0) { bT++; if (pr <= 24 && pg <= 24 && pb <= 24) bOk++; }
+        }
+    }
+    bool present = wT > 20 && bT > 20 && wOk * 100 >= wT * 80 && bOk * 100 >= bT * 70;
+    { static char B_[96]; SB sb{ B_, 0, 96 }; sb.s("impact: warn in freeze frame "); sb.s(present ? "yes, removed" : "no"); sb.z(); Log(B_); }
+    if (!present) return;
+    for (i32 y = sy0; y <= sy1; y++) {
+        const u32* mrow = g_wMask + (u64)((i64)y * CH / h) * CW; u32* frow = fr + (u64)y * w; u8* hrow = g_wHole + (u64)(y - sy0) * rw;
+        for (i32 x = sx0; x <= sx1; x++) {
+            u32 m = mrow[g_xmap[x]]; u32 a = m >> 24; hrow[x - sx0] = 0;
+            if (!a) continue;
+            if (a == 255) { hrow[x - sx0] = 1; continue; }
+            u32 px = frow[x]; u32 out = 0xFF000000u; u32 ia = 255 - a;
+            for (i32 c = 0; c < 3; c++) {
+                i32 sh = 16 - 8 * c; i32 fc = (i32)(px >> sh & 255), pm = (i32)(m >> sh & 255);
+                i32 v = (fc - pm) * 255 / (i32)ia; if (v < 0) v = 0; if (v > 255) v = 255;
+                out |= (u32)v << sh;
+            }
+            frow[x] = out;
+        }
+        for (i32 x = 0; x < rw; ) {
+            if (!hrow[x]) { x++; continue; }
+            i32 e = x; while (e < rw && hrow[e]) e++;
+            i32 L = x - 1, Rr = e;
+            u32 lp = L >= 0 ? frow[sx0 + L] : 0, rp = Rr < rw ? frow[sx0 + Rr] : 0;
+            if (L < 0 && Rr >= rw) { x = e; continue; }
+            if (L < 0) lp = rp; if (Rr >= rw) rp = lp;
+            i32 n = e - x + 1;
+            for (i32 k = x; k < e; k++) {
+                i32 t = k - x + 1; u32 out = 0xFF000000u;
+                for (i32 c = 0; c < 3; c++) { i32 sh = 16 - 8 * c; i32 lv = (i32)(lp >> sh & 255), rv = (i32)(rp >> sh & 255); out |= (u32)((lv * (n - t) + rv * t) / n) << sh; }
+                frow[sx0 + k] = out;
+            }
+            x = e;
+        }
+    }
+}
 static void DrawAimAndHorizon(i32 W, i32 H) {
     double x0, y0, ux, uy;
     if (HorizonLine(W, H, &x0, &y0, &ux, &uy)) {
@@ -2122,6 +2193,7 @@ static u32 __stdcall CaptureThread(void*) {
     return 0;
 }
 static u32* g_frzBuf = 0; static i32 g_frzW = 0, g_frzH = 0;
+static void CleanFrozenWarn(u32* fr, i32 w, i32 h);
 static bool GrabFreezeFrame(u64 trigMs, u64 pickMs, i32 w, i32 h) {
     g_frozen = 1;
     i32 busy = g_capSlot;
@@ -2137,6 +2209,7 @@ static bool GrabFreezeFrame(u64 trigMs, u64 pickMs, i32 w, i32 h) {
     if (!g_frzBuf || g_frzW != w || g_frzH != h) { g_frzBuf = (u32*)VirtualAlloc(0, (u64)w * h * 4, 0x3000, 4); g_frzW = w; g_frzH = h; }
     if (!g_frzBuf) return false;
     memcpy(g_frzBuf, g_ring[best].bits, (u64)w * h * 4);
+    CleanFrozenWarn(g_frzBuf, w, h);
     static char B_[96]; SB sb{ B_, 0, 96 }; sb.s("impact: freeze frame age ms="); sb.i((i64)(trigMs - g_ring[best].t)); sb.s(" before-impact ms="); sb.i((i64)pickMs - (i64)g_ring[best].t); sb.z(); Log(B_);
     return true;
 }
