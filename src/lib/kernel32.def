@@ -36,3 +36,8 @@ VirtualFree
 CreateEventW
 SetEvent
 WaitForSingleObject
+Thread32First
+Thread32Next
+OpenThread
+SuspendThread
+ResumeThread

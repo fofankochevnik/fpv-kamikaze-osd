@@ -32,6 +32,11 @@ IMP HANDLE __stdcall CreateToolhelp32Snapshot(u32, u32);
 IMP i32 __stdcall Process32FirstW(HANDLE, PROCESSENTRY32W*);
 IMP i32 __stdcall Process32NextW(HANDLE, PROCESSENTRY32W*);
 IMP i32 __stdcall CloseHandle(HANDLE);
+IMP i32 __stdcall Thread32First(HANDLE, void*);
+IMP i32 __stdcall Thread32Next(HANDLE, void*);
+IMP HANDLE __stdcall OpenThread(u32, i32, u32);
+IMP u32 __stdcall SuspendThread(HANDLE);
+IMP u32 __stdcall ResumeThread(HANDLE);
 IMP HANDLE __stdcall OpenProcess(u32, i32, u32);
 IMP i32 __stdcall ReadProcessMemory(HANDLE, const void*, void*, u64, u64*);
 IMP i32 __stdcall WriteProcessMemory(HANDLE, void*, const void*, u64, u64*);
@@ -743,9 +748,36 @@ static u64 PeekPawn() {
     return pawn;
 }
 static HANDLE g_wakeEvt = 0; static volatile u64 g_watchPawn = 0; static volatile i32 g_watchOn = 0;
+static volatile u64 g_watchAmmo = 0; static volatile i32 g_watchDetOff = -1; static volatile i32 g_detFlag = 0; static volatile u64 g_detMs = 0;
+static volatile i32 g_frozenX = 0;
+static HANDLE g_thr[512]; static i32 g_thrN = 0; static volatile i32 g_gameSusp = 0; static volatile u64 g_suspT = 0;
+static u64 QpcMs() { i64 c, f; QueryPerformanceCounter(&c); QueryPerformanceFrequency(&f); return (u64)(c / (f / 1000)); }
+static void RefreshThreads() {
+    if (g_gameSusp) return;
+    for (i32 i = 0; i < g_thrN; i++) CloseHandle(g_thr[i]); g_thrN = 0;
+    HANDLE sn = CreateToolhelp32Snapshot(4, 0); if (sn == (HANDLE)-1) return;
+    struct { u32 sz, use, tid, pid; i32 bp, dp; u32 fl; } te; te.sz = sizeof(te);
+    if (Thread32First(sn, &te)) do { if (te.pid == g_pid && g_thrN < 512) { HANDLE h = OpenThread(0x2, 0, te.tid); if (h) g_thr[g_thrN++] = h; } te.sz = sizeof(te); } while (Thread32Next(sn, &te));
+    CloseHandle(sn);
+}
+static void SuspendGame() { if (g_gameSusp || !g_thrN) return; for (i32 i = 0; i < g_thrN; i++) SuspendThread(g_thr[i]); g_suspT = QpcMs(); g_gameSusp = 1; }
+static void ResumeGame() { if (!g_gameSusp) return; for (i32 i = 0; i < g_thrN; i++) ResumeThread(g_thr[i]); g_gameSusp = 0; }
 static u32 __stdcall PawnWatch(void*) {
+    u64 lastRef = 0, curAm = 0; u8 curDet = 1;
     for (;;) {
+        if (g_gameSusp && QpcMs() - g_suspT > 300) ResumeGame();
         if (!g_watchOn || !g_watchPawn || !g_proc) { Sleep(5); continue; }
+        u64 now = QpcMs();
+        if (now - lastRef > 2000) { lastRef = now; RefreshThreads(); }
+        u64 am = g_watchAmmo; i32 off = g_watchDetOff;
+        if (am && off >= 0) {
+            u8 d = 0; RPM(am + off, &d, 1);
+            if (am != curAm) { curAm = am; curDet = d; }
+            else if (d && !curDet) {
+                curDet = d; g_frozenX = 1; SuspendGame(); g_detMs = QpcMs(); g_detFlag = 1; g_watchOn = 0;
+                if (g_wakeEvt) SetEvent(g_wakeEvt); continue;
+            }
+        }
         u64 p = PeekPawn();
         if (p != g_watchPawn) { g_watchOn = 0; if (g_wakeEvt) SetEvent(g_wakeEvt); }
         Sleep(1);
@@ -1343,6 +1375,8 @@ static void FuzeTick(u64 now) {
     u64 am = Rd<u64>(arr); if (!IsPtr(am)) return;
     u64 ac = ObjClass(am);
     if (g_fuzeFn && g_fuzeTBE >= 0) {
+        if (g_watchDetOff < 0) { u64 fb = FindField(ac, "bDetonated", true); if (fb) g_watchDetOff = FieldOff(fb); }
+        g_watchAmmo = am;
         static u64 lastAm = 0; static u8 lastDet = 0;
         u8 det = Rd<u8>(am + 0x448);
         if (am != lastAm) { lastAm = am; lastDet = det; }
@@ -2472,7 +2506,7 @@ static void EnsureCap(CapFrame& f, i32 w, i32 h) {
 static u32 __stdcall CaptureThread(void*) {
     u64 lastLog = 0; u64 sum = 0; i32 cnt = 0;
     for (;;) {
-        if (!g_capOn || g_frozen || g_capW < 100) { Sleep(10); continue; }
+        if (!g_capOn || g_frozen || g_frozenX || g_capW < 100) { Sleep(10); continue; }
         g_capBusy = 1;
         if (g_frozen) { g_capBusy = 0; continue; }
         i32 i = (g_ringIdx + 1) & 7;
@@ -2697,9 +2731,11 @@ extern "C" void Entry() {
         bool trigger = false; u64 trigMs = NowMs(); u64 pickMs = 0; static bool frzSoft = false; static u64 frzPawn = 0; bool softTrig = false;
         if (g_reflReady) {
             pawn = ReadPawn();
+            if (g_detFlag && (!C.impactFx || frzState != 0)) { g_detFlag = 0; g_frozenX = 0; ResumeGame(); }
             if (C.impactFx && frzState == 0) {
                 bool wasKam = lastPawn && g_pi.kamikaze;
-                if (wasKam && pawn == lastPawn) {
+                if (g_detFlag) { g_detFlag = 0; trigger = true; pickMs = g_detMs; trigMs = g_detMs; Log("impact: ammo detonated"); }
+                else if (wasKam && pawn == lastPawn && !g_fuzeFn) {
                     u64 root = Rd<u64>(pawn + oRoot); double lc[3];
                     if (IsPtr(root) && RPM(root + oRelLoc, lc, 24)) {
                         if (!lpOk) { lpx = lc[0]; lpy = lc[1]; lpz = lc[2]; lpOk = true; lastMoveT = trigMs; }
@@ -2733,7 +2769,7 @@ extern "C" void Entry() {
                     bool br = g_pi.brokenOff >= 0 && (Rd<u8>(pawn + g_pi.brokenOff) & g_pi.brokenMask);
                     if (br && !prevBroken && !trigger) { trigger = true; pickMs = lastFastT ? lastFastT : trigMs - 40; Log("impact: drone broken"); }
                     prevBroken = br;
-                } else if (wasKam && pawn != lastPawn && !prevBroken) {
+                } else if (wasKam && pawn != lastPawn && (!prevBroken || g_fuzeFn)) {
                     bool manual = trigMs - g_manualKeyMs < 800;
                     if (!manual && lastSpd >= C.frzSpeed) { trigger = true; pickMs = lastFastT ? lastFastT : trigMs - 60; Log("impact: drone lost"); }
                     else Log(manual ? "impact: drone left manually, no freeze" : "impact: drone lost while hovering, no freeze");
@@ -2767,8 +2803,10 @@ extern "C" void Entry() {
             if (trigger && shown && rc0.r >= 100 && rc0.b >= 100) {
                 if (GrabFreezeFrame(trigMs, pickMs ? pickMs : trigMs, rc0.r, rc0.b)) { frzState = 1; frzStart = trigMs; frzSoft = softTrig; frzPawn = pawn; g_warnHold = (C.warnOn && T.gas >= C.warnThr && g_warnStart) ? 1 : 0; g_lastPh = -1; if (g_warnHold) { g_lastKey[0] = 0; Render(rc0.r, rc0.b); } ComposeImpact(rc0.r, rc0.b, false); }
                 else g_frozen = 0;
-                if (frzState) { HDC scr = GetDC(0); POINT src = { 0, 0 }; SIZE sz = { rc0.r, rc0.b }; BLENDFUNCTION bf = { 0, 0, 255, 1 }; UpdateLayeredWindow(ov, scr, &p0, &sz, g_memDC, &src, 0, &bf, 2); ReleaseDC(0, scr); }
+                if (frzState) { HDC scr = GetDC(0); POINT src = { 0, 0 }; SIZE sz = { rc0.r, rc0.b }; BLENDFUNCTION bf = { 0, 0, 255, 1 }; UpdateLayeredWindow(ov, scr, &p0, &sz, g_memDC, &src, 0, &bf, 2); ReleaseDC(0, scr); if (!shown) { ShowWindow(ov, 4); shown = true; } }
             }
+            if (trigger && !frzState) g_frozen = 0;
+            if (!g_detFlag) { if (g_gameSusp) { if (frzState) Sleep(35); ResumeGame(); } g_frozenX = 0; }
             if (frzState) {
                 u64 el = NowMs() - frzStart;
                 if (g_warnHold && frzState) {
