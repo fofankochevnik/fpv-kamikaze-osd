@@ -1318,6 +1318,10 @@ static void FuzeTick(u64 now) {
     u64 am = Rd<u64>(arr); if (!IsPtr(am)) return;
     u64 ac = ObjClass(am);
     if (g_fuzeFn && g_fuzeTBE >= 0) {
+        static u64 lastAm = 0; static u8 lastDet = 0;
+        u8 det = Rd<u8>(am + 0x448);
+        if (am != lastAm) { lastAm = am; lastDet = det; }
+        else if (det != lastDet) { lastDet = det; if (det) Log("fuze: ammo bDetonated set"); }
         double d = Rd<double>(am + g_fuzeTBE);
         if (d != g_fuzeLast) {
             g_fuzeLast = d;
@@ -1392,8 +1396,11 @@ static void DumpBytecodeFor(SB& sb, u64 cls) {
             }
             for (i32 o = 0; o + 12 <= sn; o++) {
                 u32 a = *(u32*)(buf + o), b = *(u32*)(buf + o + 4);
-                if (a != b || a == 0 || a > 0x3000000) continue;
-                char nm[128]; if (!NameIdx(a, *(u32*)(buf + o + 8), nm, 128) || !PrintableName(nm)) continue;
+                if (o < 1) continue;
+                u8 tk = buf[o - 1];
+                if (!(tk == 0x1B || tk == 0x45 || tk == 0x21 || tk == 0x61 || tk == 0x4B)) continue;
+                if (a == 0 || a > 0x3000000 || b > 64) continue;
+                char nm[128]; if (!NameIdx(a, b, nm, 128) || !PrintableName(nm)) continue;
                 sb.s("NAME "); sb.i(o); sb.c(' '); sb.s(nm); sb.s("\r\n");
             }
             VirtualFree(buf, 0, 0x8000);
