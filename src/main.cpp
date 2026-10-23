@@ -1344,7 +1344,7 @@ static void FuzeTick(u64 now) {
     i32 pp = oBrk + 9; u64 ptImpact = 0;
     for (i32 k = 0; k < 19; k++) if (buf[pp + 9 * k] != 0x00) { Log("fuze: unexpected BreakHitResult params"); nextTry = now + 600000; return; }
     ptImpact = *(u64*)(buf + pp + 9 * 6 + 1);
-    bool sawSpd = false; for (i32 o = 700; o < 740; o++) if (buf[o] == 0x01 && *(u64*)(buf + o + 1) == fSpd) sawSpd = true;
+    bool sawSpd = false; for (i32 o = 700; o < 760; o++) if (buf[o] == 0x01 && *(u64*)(buf + o + 1) == fSpd) sawSpd = true;
     if (!sawSpd) { Log("fuze: DetonateSpeed pointer mismatch, patch skipped"); nextTry = now + 600000; return; }
     u64 fnV = ScriptPtrByName(pc, "VSize"), fnG = ScriptPtrByName(pc, "Greater_DoubleDouble"), fnC = ScriptPtrByName(pc, "K2_GetComponentLocation"), fnS = ScriptPtrByName(pc, "Subtract_VectorVector");
     if (!fnV) fnV = ScriptPtrByName(ac, "VSize"); if (!fnG) fnG = ScriptPtrByName(ac, "Greater_DoubleDouble"); if (!fnC) fnC = ScriptPtrByName(ac, "K2_GetComponentLocation");
