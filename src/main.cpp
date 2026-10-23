@@ -203,7 +203,7 @@ static void Log(const char* a, const char* b = 0, const char* c = 0, const char*
 struct Config {
     i32 startTimer, cells;
     double mahStart, packMah, ampsIdleMin, ampsIdleMax, ampsMaxMin, ampsMaxMax;
-    wc font[64]; double fontSize; i32 fontBold; wc warnFont[64]; i32 warnOn; double warnThr, warnY;
+    wc font[64]; double fontSize; i32 fontBold; wc warnFont[64]; i32 warnOn; double warnThr, warnY; i32 fuzeOn; double fuzeR;
     i32 invertPitch, altRelative, useTemplate;
     char kamikazeMatch[256], reconMatch[256];
     i32 fallbackShow;
@@ -306,6 +306,10 @@ static const char* DEFAULT_CFG =
     "YOffset=8\r\n"
     "Font=Courier New\r\n"
     "\r\n"
+    "[Fuze]\r\n"
+    "Enable=1\r\n"
+    "Radius=20\r\n"
+    "\r\n"
     "[Hotkeys]\r\n"
     "Toggle=0x75\r\n"
     "ResetTimer=0x76\r\n"
@@ -332,7 +336,7 @@ static void LoadConfig() {
     C.keyThrUp = IniI(L"Telemetry", L"ThrottleUpKey", 0); C.keyThrDown = IniI(L"Telemetry", L"ThrottleDownKey", 0);
     C.hideHud = IniI(L"Hud", L"HideGameHud", 1); C.fullCam = IniI(L"Hud", L"FullscreenCamera", 1); C.keepWrecks = IniI(L"Hud", L"KeepWrecks", 1); C.noNoise = IniI(L"Hud", L"NoInterference", 1); C.camHeight = IniI(L"Hud", L"CameraHeight", 720); C.lodIgnoreFov = IniI(L"Hud", L"LodIgnoreFov", 1); C.knockScale = IniD(L"Hud", L"KnockbackScale", 0.0); C.folCull = IniD(L"Hud", L"FoliageCullScale", 1.0); C.folMin = IniD(L"Hud", L"FoliageMinCullDistance", 40000); C.folFade = IniD(L"Hud", L"FoliageFadeStart", 0.7);
     C.impactFx = IniI(L"Impact", L"Enable", 1); C.frzTime = IniD(L"Impact", L"FreezeSeconds", 1.3); C.noImgTime = IniD(L"Impact", L"NoImageSeconds", 2.0); C.warnOn = IniI(L"Warn", L"Enable", 1); C.warnThr = IniD(L"Warn", L"Throttle", 75); C.warnY = IniD(L"Warn", L"YOffset", 8); wcpy(C.warnFont, Ini(L"Warn", L"Font", L"Courier New"), 64);
-    C.grayA = IniD(L"Impact", L"GrayAlpha", 0.2); C.frzBack = IniD(L"Impact", L"LookbackMs", 0); C.frzSpeed = IniD(L"Impact", L"MinSpeed", 0); C.hideImages = IniI(L"Hud", L"HideImages", 1); C.hideText = IniI(L"Hud", L"HideText", 1);
+    C.fuzeOn = IniI(L"Fuze", L"Enable", 1); C.fuzeR = IniD(L"Fuze", L"Radius", 20); C.grayA = IniD(L"Impact", L"GrayAlpha", 0.2); C.frzBack = IniD(L"Impact", L"LookbackMs", 0); C.frzSpeed = IniD(L"Impact", L"MinSpeed", 0); C.hideImages = IniI(L"Hud", L"HideImages", 1); C.hideText = IniI(L"Hud", L"HideText", 1);
     IniA(L"Hud", L"HudWidgets", L"WBP_FPV_Drone_C", C.hudWidgets, 256);
     IniA(L"Hud", L"KeepWidgets", L"", C.keepWidgets, 512);
     C.keyToggle = IniI(L"Hotkeys", L"Toggle", 0x75); C.keyReset = IniI(L"Hotkeys", L"ResetTimer", 0x76); C.keyDump = IniI(L"Hotkeys", L"Dump", 0x78);
@@ -1274,6 +1278,96 @@ static void DumpFuncs(SB& sb, u64 cls) {
         }
     }
 }
+
+static u64 ScriptPtrByName(u64 cls, const char* want) {
+    char fn[128], cn[128], nm[128];
+    for (u64 c = cls; IsPtr(c); c = Super(c)) {
+        if (!ObjName(c, cn, 128) || !sends(cn, "_C")) break;
+        u64 fx = Rd<u64>(c + L.child - 8);
+        for (i32 i = 0; i < 400 && IsPtr(fx); i++, fx = Rd<u64>(fx + 0x28)) {
+            u64 sp = Rd<u64>(fx + 0x60); i32 sn = Rd<i32>(fx + 0x68);
+            if (!IsPtr(sp) || sn < 8 || sn > 20000) continue;
+            u8* buf = (u8*)VirtualAlloc(0, (u64)sn + 16, 0x3000, 4); if (!buf) continue;
+            if (!RPM(sp, buf, sn)) { for (i32 o = 0; o < sn; o += 0x1000) RPM(sp + o, buf + o, sn - o < 0x1000 ? sn - o : 0x1000); }
+            u64 res = 0;
+            for (i32 o = 0; o + 8 <= sn && !res; o++) {
+                if (buf[o + 6] || buf[o + 7]) continue;
+                u64 v = *(u64*)(buf + o); if (v < 0x10000 || (v & 7)) continue;
+                if (ObjName(v, nm, 128) && seq(nm, want)) res = v;
+            }
+            VirtualFree(buf, 0, 0x8000);
+            if (res) return res;
+        }
+    }
+    return 0;
+}
+static u64 FindFuncIn(u64 cls, const char* want) {
+    char fn[128];
+    u64 fx = Rd<u64>(cls + L.child - 8);
+    for (i32 i = 0; i < 400 && IsPtr(fx); i++, fx = Rd<u64>(fx + 0x28)) if (ObjName(fx, fn, 128) && seq(fn, want)) return fx;
+    return 0;
+}
+static u64 g_fuzeFn = 0; static i32 g_fuzeTBE = -1; static double g_fuzeLast = 0;
+static void FuzeTick(u64 now) {
+    static u64 nextTry = 0;
+    if (!C.fuzeOn || !g_kamikazeActive || !IsPtr(g_pawn)) return;
+    u64 pawn = g_pawn, pc = ObjClass(pawn);
+    i32 oAm = PropOff(pc, "Ammos"); if (oAm < 0) return;
+    u64 arr = Rd<u64>(pawn + oAm); i32 n = Rd<i32>(pawn + oAm + 8);
+    if (n <= 0 || !IsPtr(arr)) return;
+    u64 am = Rd<u64>(arr); if (!IsPtr(am)) return;
+    u64 ac = ObjClass(am);
+    if (g_fuzeFn && g_fuzeTBE >= 0) {
+        double d = Rd<double>(am + g_fuzeTBE);
+        if (d != g_fuzeLast) {
+            g_fuzeLast = d;
+            if (d > 0.0001 && d < 1e6) { char b[160]; SB sb{ b, 0, 160 }; sb.s("fuze: hit dist="); sb.f(d, 1); sb.s("cm radius="); sb.f(C.fuzeR, 1); sb.s(d < C.fuzeR ? " -> BOOM" : " -> ignored"); sb.c(0); Log(b); }
+        }
+        return;
+    }
+    if (now < nextTry) return;
+    nextTry = now + 3000;
+    u64 base = ac; char cn[128];
+    while (IsPtr(base) && ObjName(base, cn, 128) && !seq(cn, "BP_Ammo_Base_C")) base = Super(base);
+    if (!IsPtr(base)) { Log("fuze: BP_Ammo_Base_C not found"); return; }
+    u64 fx = FindFuncIn(base, "CheckHit");
+    if (!fx) { Log("fuze: CheckHit not found"); return; }
+    u64 sp = Rd<u64>(fx + 0x60); i32 sn = Rd<i32>(fx + 0x68);
+    if (!IsPtr(sp) || sn != 781) { Log("fuze: unexpected CheckHit size, patch skipped"); nextTry = now + 600000; return; }
+    u8 buf[781]; if (!RPM(sp, buf, 781)) return;
+    u64 fDet = FindField(ac, "Detonator", true), fTbe = FindField(ac, "TimeBeforeExplode", true), fSpd = FindField(ac, "DetonateSpeed", true);
+    if (!fDet || !fTbe || !fSpd) { Log("fuze: fields not found"); nextTry = now + 600000; return; }
+    if (buf[529] != 0x0F || (buf[764] != 0x1B && buf[764] != 0x45) || buf[778] != 0x04 || buf[780] != 0x53) { Log("fuze: CheckHit layout differs, patch skipped"); nextTry = now + 600000; return; }
+    i32 oBrk = -1; char nm[128];
+    for (i32 o = 0; o + 9 + 9 * 19 < 781; o++) { if (buf[o] != 0x68) continue; u64 v = *(u64*)(buf + o + 1); if (IsPtr(v) && ObjName(v, nm, 128) && seq(nm, "BreakHitResult")) { oBrk = o; break; } }
+    if (oBrk < 0) { Log("fuze: BreakHitResult not found"); nextTry = now + 600000; return; }
+    i32 pp = oBrk + 9; u64 ptImpact = 0;
+    for (i32 k = 0; k < 19; k++) if (buf[pp + 9 * k] != 0x00) { Log("fuze: unexpected BreakHitResult params"); nextTry = now + 600000; return; }
+    ptImpact = *(u64*)(buf + pp + 9 * 6 + 1);
+    bool sawSpd = false; for (i32 o = 700; o < 740; o++) if (buf[o] == 0x01 && *(u64*)(buf + o + 1) == fSpd) sawSpd = true;
+    if (!sawSpd) { Log("fuze: DetonateSpeed pointer mismatch, patch skipped"); nextTry = now + 600000; return; }
+    u64 fnV = ScriptPtrByName(pc, "VSize"), fnG = ScriptPtrByName(pc, "Greater_DoubleDouble"), fnC = ScriptPtrByName(pc, "K2_GetComponentLocation"), fnS = ScriptPtrByName(pc, "Subtract_VectorVector");
+    if (!fnV) fnV = ScriptPtrByName(ac, "VSize"); if (!fnG) fnG = ScriptPtrByName(ac, "Greater_DoubleDouble"); if (!fnC) fnC = ScriptPtrByName(ac, "K2_GetComponentLocation");
+    if (!fnV || !fnG || !fnC || !fnS) { Log("fuze: math functions not found"); nextTry = now + 600000; return; }
+    u8 out[249]; i32 n2 = 0; u8 det[14]; for (i32 k = 0; k < 14; k++) det[k] = buf[764 + k];
+    #define PB(v) out[n2++] = (u8)(v)
+    #define P8(v) { u64 q_ = (u64)(v); for (i32 k_ = 0; k_ < 8; k_++) PB(q_ >> (8 * k_)); }
+    #define P4(v) { u32 q_ = (u32)(v); for (i32 k_ = 0; k_ < 4; k_++) PB(q_ >> (8 * k_)); }
+    PB(0x0F); P8(fTbe); PB(0x01); P8(fTbe);
+    PB(0x68); P8(fnV); PB(0x68); P8(fnS); PB(0x00); P8(ptImpact);
+    PB(0x19); PB(0x01); P8(fDet); P4(10); P8(0); PB(0x1C); P8(fnC); PB(0x16);
+    PB(0x16); PB(0x16);
+    PB(0x07); P4(778);
+    PB(0x68); P8(fnG); PB(0x37); { double r = C.fuzeR; u64 q = *(u64*)&r; P8(q); } PB(0x01); P8(fTbe); PB(0x16);
+    for (i32 k = 0; k < 14; k++) PB(det[k]);
+    while (n2 < 249) PB(0x0B);
+    #undef PB
+    #undef P8
+    #undef P4
+    if (!WPM(sp + 529, out, 249)) { Log("fuze: write failed"); nextTry = now + 600000; return; }
+    g_fuzeFn = fx; g_fuzeTBE = FieldOff(fTbe); g_fuzeLast = Rd<double>(am + g_fuzeTBE);
+    Log("fuze: CheckHit patched, detonation only near the fuze");
+}
 static void DumpBytecodeFor(SB& sb, u64 cls) {
     char fn[128], cn[128], rn[128];
     for (u64 c = cls; IsPtr(c); c = Super(c)) {
@@ -1882,6 +1976,7 @@ static u32 __stdcall Worker(void*) {
         if (g_ewBuilt) ApplyEw(C.noNoise && g_kamikazeActive && !g_userHidden);
         ApplyScreenPercentage(g_kamikazeActive && C.camHeight > 0 && !g_userHidden, g_winH);
         FpsTick(now);
+        FuzeTick(now);
         {
             u64 wld = Rd<u64>(g_base + RVA_GWORLD);
             if (wld != lastWorld) { lastWorld = wld; wreckAt = now + 3000; g_ewBuilt = false; g_ewN = 0; g_naniteLogged = false; g_landOk = 0; g_folN = 0; g_folClsN = 0; g_kbPN = 0; if (g_kbK) memset(g_kbK, 0, (u64)KBC * 8); g_vehBase = 0; g_oDestroyTime = -1; if (g_vk) { memset(g_vk, 0, (u64)VHC * 8); } }
