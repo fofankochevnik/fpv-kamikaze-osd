@@ -1239,6 +1239,98 @@ static void DumpValue(SB& sb, u64 a, u64 f, const char* ty, i32 depth, i32 inden
     else sb.s("?");
 }
 
+
+static bool PrintableName(const char* n) { i32 l = slen(n); if (l < 2 || l > 90) return false; for (i32 i = 0; i < l; i++) { char c = n[i]; if (!(c >= 32 && c < 127)) return false; } return true; }
+static void DumpFuncs(SB& sb, u64 cls) {
+    char fn[128], cn[128], rn[128];
+    for (u64 c = cls; IsPtr(c); c = Super(c)) {
+        if (!ObjName(c, cn, 128) || !sends(cn, "_C")) break;
+        sb.s("  == functions of "); sb.s(cn); sb.s(" ==\r\n");
+        u64 fx = Rd<u64>(c + L.child - 8);
+        for (i32 i = 0; i < 400 && IsPtr(fx); i++, fx = Rd<u64>(fx + 0x28)) {
+            if (!ObjName(fx, fn, 128)) continue;
+            ClassNameOf(fx, rn, 128);
+            u64 sp = Rd<u64>(fx + 0x60); i32 sn = Rd<i32>(fx + 0x68);
+            sb.s("  fn "); sb.s(fn); sb.s(" ("); sb.s(rn); sb.s(") flags="); sb.h(Rd<u32>(fx + 0xB0)); sb.s(" script="); sb.i(sn); sb.s("\r\n");
+            if (!IsPtr(sp) || sn < 8 || sn > 400000) continue;
+            u8* buf = (u8*)VirtualAlloc(0, (u64)sn + 16, 0x3000, 4); if (!buf) continue;
+            if (!RPM(sp, buf, sn)) { for (i32 o = 0; o < sn; o += 0x1000) RPM(sp + o, buf + o, sn - o < 0x1000 ? sn - o : 0x1000); }
+            static u64 seen[512]; i32 ns = 0; sb.s("     refs:");
+            for (i32 o = 0; o + 8 <= sn && ns < 400; o++) {
+                if (buf[o + 6] || buf[o + 7]) continue;
+                u64 v = *(u64*)(buf + o); if (v < 0x10000 || (v & 7)) continue;
+                bool dup = false; for (i32 q = 0; q < ns; q++) if (seen[q % 512] == v) { dup = true; break; }
+                if (dup) continue;
+                char nm[128]; u32 idx[2]; if (!RPM(v + 0x18, idx, 8)) continue;
+                if (!ObjName(v, nm, 128) || !PrintableName(nm)) continue;
+                seen[ns % 512] = v; ns++;
+                sb.c(' '); sb.s(nm); u64 oc = Rd<u64>(v + 0x10);
+                if (IsPtr(oc) && ObjName(oc, rn, 128) && PrintableName(rn)) { sb.c('<'); sb.s(rn); sb.c('>'); }
+                o += 7;
+            }
+            sb.s("\r\n");
+            VirtualFree(buf, 0, 0x8000);
+            if (sb.n > DUMPCAP - 131072) return;
+        }
+    }
+}
+static void DumpAmmoInfo(const char* reason) {
+    if (!g_dump) g_dump = (char*)VirtualAlloc(0, DUMPCAP, 0x3000, 4);
+    if (!g_dump || !IsPtr(g_pawn)) return;
+    SB sb{ g_dump, 0, DUMPCAP };
+    sb.s("\r\n#################### AMMO / FUZE INFO ("); sb.s(reason); sb.s(") ####################\r\n");
+    u64 pawn = g_pawn, pc = ObjClass(pawn);
+    char nm[128], cn[128], ty[64];
+    sb.s("drone class chain functions:\r\n");
+    DumpFuncs(sb, pc);
+    i32 oAm = PropOff(pc, "Ammos");
+    sb.s("Ammos offset="); sb.i(oAm); sb.s("\r\n");
+    if (oAm >= 0) {
+        u64 arr = Rd<u64>(pawn + oAm); i32 n = Rd<i32>(pawn + oAm + 8);
+        for (i32 k = 0; k < n && k < 8 && IsPtr(arr); k++) {
+            u64 am = Rd<u64>(arr + (u64)k * 8); if (!IsPtr(am)) continue;
+            u64 ac = ObjClass(am);
+            sb.s("---- AMMO ["); sb.i(k); sb.s("] "); DumpObjRef(sb, am); sb.s("\r\nchain: ");
+            for (u64 sct = ac; IsPtr(sct); sct = Super(sct)) { if (!ObjName(sct, nm, 128)) break; sb.s(nm); sb.s(" > "); if (seq(nm, "Object")) break; }
+            sb.s("\r\n");
+            u64 root = Rd<u64>(am + oRoot);
+            sb.s("root: "); DumpObjRef(sb, root); sb.s("\r\n");
+            g_dumpStop = "Actor"; DumpStruct(sb, am, ac, 2, 1, false); g_dumpStop = 0;
+            sb.s("--- ammo components ---\r\n");
+            for (u64 sct = ac; IsPtr(sct); sct = Super(sct)) {
+                if (!ObjName(sct, cn, 128)) break;
+                for (u64 f = FirstField(sct); IsPtr(f); f = NextField(f)) {
+                    if (!FieldType(f, ty, 64) || !seq(ty, "ObjectProperty")) continue;
+                    u64 o = Rd<u64>(am + FieldOff(f)); if (!IsPtr(o)) continue;
+                    FieldName(f, nm, 128); sb.s("* "); sb.s(nm); sb.s(" -> "); DumpObjRef(sb, o);
+                    double v[3]; if (RPM(o + oRelLoc, v, 24)) { sb.s(" relLoc="); sb.f(v[0], 1); sb.c(','); sb.f(v[1], 1); sb.c(','); sb.f(v[2], 1); }
+                    sb.s("\r\n");
+                    u64 oc = ObjClass(o); if (!ClassNameOf(o, cn, 128)) continue;
+                    if (icontains(cn, "Mesh") || icontains(cn, "Box") || icontains(cn, "Sphere") || icontains(cn, "Capsule") || icontains(cn, "Primitive")) {
+                        for (u64 s2 = oc; IsPtr(s2); s2 = Super(s2)) {
+                            char c2[128]; if (!ObjName(s2, c2, 128)) break;
+                            for (u64 f2 = FirstField(s2); IsPtr(f2); f2 = NextField(f2)) {
+                                char n2[128], t2[64]; FieldName(f2, n2, 128); FieldType(f2, t2, 64);
+                                if (seq(n2, "BodyInstance") || seq(n2, "bGenerateOverlapEvents") || seq(n2, "StaticMesh") || seq(n2, "SkeletalMeshAsset") || seq(n2, "BoxExtent") || seq(n2, "SphereRadius") || seq(n2, "CapsuleRadius") || seq(n2, "bNotifyRigidBodyCollision") || seq(n2, "OnComponentHit") || seq(n2, "OnComponentBeginOverlap") || seq(n2, "RelativeScale3D")) {
+                                    sb.s("    "); sb.s(n2); sb.s(" : "); sb.s(t2); sb.s(" = "); DumpValue(sb, o + FieldOff(f2), f2, t2, 2, 3); sb.s("\r\n");
+                                }
+                            }
+                            if (seq(c2, "PrimitiveComponent")) break;
+                        }
+                    }
+                }
+                if (!sends(cn, "_C") && !sends(nm, "_C")) { }
+                if (!ObjName(sct, cn, 128) || !sends(cn, "_C")) break;
+            }
+            sb.s("--- ammo class functions ---\r\n");
+            DumpFuncs(sb, ac);
+            if (sb.n > DUMPCAP - 131072) break;
+        }
+    }
+    sb.s("#################### END AMMO ####################\r\n");
+    AppendFile(g_dumpPath, sb.p, sb.n);
+    Log("ammo dump written");
+}
 static void DoDump(const char* reason) {
     if (!g_dump) g_dump = (char*)VirtualAlloc(0, DUMPCAP, 0x3000, 4);
     if (!g_dump) return;
@@ -1737,7 +1829,7 @@ static u32 __stdcall Worker(void*) {
         }
         if (g_pawnSerial != lastSerial) { lastSerial = g_pawnSerial; if (g_pawn) dumpAt = now + 2500; }
         if (dumpAt && now >= dumpAt) { dumpAt = 0; DoDump("pawn changed"); }
-        if (g_dumpReq) { g_dumpReq = 0; DoDump("hotkey"); }
+        if (g_dumpReq) { g_dumpReq = 0; if (g_kamikazeActive) DumpAmmoInfo("hotkey"); DoDump("hotkey"); }
         if (C.noNoise && g_kamikazeActive) KillInterference(g_pawn);
         if (g_ewBuilt) ApplyEw(C.noNoise && g_kamikazeActive && !g_userHidden);
         ApplyScreenPercentage(g_kamikazeActive && C.camHeight > 0 && !g_userHidden, g_winH);
